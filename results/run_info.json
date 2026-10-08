@@ -1,0 +1,241 @@
+{
+  "run_date": "2026-10-09",
+  "git_sha": "a0561b5592a940ce76161f9d04848658124b599b",
+  "n_tickers": 207,
+  "n_chf_tickers_with_prices": 213,
+  "n_observations_total": 28016,
+  "observation_range": [
+    "2014-03-31",
+    "2026-09-30"
+  ],
+  "n_obs": {
+    "vol_1m": {
+      "train": 16326,
+      "val": 4326,
+      "test": 6473
+    },
+    "beta_1y": {
+      "train": 14272,
+      "val": 2141,
+      "test": 4240
+    },
+    "log_mcap": {
+      "train": 18913,
+      "val": 4587,
+      "test": 4365
+    },
+    "liquidity_1m": {
+      "train": 16385,
+      "val": 4336,
+      "test": 6493
+    },
+    "sector": {
+      "train": 18762,
+      "val": 4436,
+      "test": 4214
+    }
+  },
+  "n_tickers_by_split": {
+    "vol_1m": {
+      "train": 193,
+      "val": 201,
+      "test": 206
+    },
+    "beta_1y": {
+      "train": 190,
+      "val": 196,
+      "test": 203
+    },
+    "log_mcap": {
+      "train": 140,
+      "val": 33,
+      "test": 33
+    },
+    "liquidity_1m": {
+      "train": 193,
+      "val": 201,
+      "test": 206
+    },
+    "sector": {
+      "train": 139,
+      "val": 32,
+      "test": 32
+    }
+  },
+  "splits": {
+    "time": {
+      "train": "<= 2021-12-31",
+      "val": "2022-01-01..2023-12-31",
+      "test": ">= 2024-01-01"
+    },
+    "ticker": {
+      "train/val/test": "70/15/15",
+      "seed": 42,
+      "stratified_by": "sector"
+    }
+  },
+  "dropped_sector_classes": [
+    {
+      "sector": "Utilities",
+      "n_tickers": 4
+    }
+  ],
+  "n_sector_classes": 9,
+  "excluded_non_chf_tickers": {
+    "EPH.SW": "EUR",
+    "GEM.SW": "USD",
+    "GOTION.SW": "USD",
+    "JCARE.SW": "USD",
+    "KEDA.SW": "USD",
+    "LEPU.SW": "USD",
+    "SSNE.SW": null,
+    "SWD.SW": "USD"
+  },
+  "cleaning": {
+    "filled_missing_days": 54,
+    "artifact_returns_zeroed": 41,
+    "artifact_threshold_abs_log_return": 0.7
+  },
+  "time_target_notes": {
+    "vol_1m": {
+      "n_obs_with_target": 27809,
+      "dropped_split_overlap": 595,
+      "dropped_zero_vol_windows": 89
+    },
+    "beta_1y": {
+      "n_obs_with_target": 25556,
+      "dropped_split_overlap": 4903
+    },
+    "liquidity_1m": {
+      "n_obs_with_target": 27809,
+      "dropped_split_overlap": 595
+    }
+  },
+  "data_manifest": {
+    "run_date": "2026-10-09",
+    "n_universe": 231,
+    "n_with_prices": 221,
+    "n_with_>=500_rows": 211,
+    "price_date_range": [
+      "2010-01-04",
+      "2026-10-07"
+    ],
+    "index_date_ranges": {
+      "^SSHI": [
+        "2013-03-05",
+        "2026-10-07"
+      ],
+      "^SSMI": [
+        "2010-01-04",
+        "2026-10-07"
+      ]
+    },
+    "n_with_sector": 215,
+    "sector_counts": {
+      "Industrials": 52,
+      "Financial Services": 45,
+      "Healthcare": 38,
+      "Real Estate": 19,
+      "Technology": 15,
+      "Consumer Cyclical": 14,
+      "Basic Materials": 11,
+      "Consumer Defensive": 10,
+      "Communication Services": 7,
+      "Utilities": 4
+    },
+    "n_with_shares": 218,
+    "n_failed_tickers": 26
+  },
+  "chosen_hyperparameters": {
+    "vol_1m": {
+      "linear_raw": {
+        "alpha": 0.01
+      },
+      "lgbm_raw": {
+        "num_leaves": 8,
+        "min_child_samples": 100,
+        "best_iteration": 285
+      },
+      "linear_fe": {
+        "alpha": 0.01
+      },
+      "lgbm_fe": {
+        "num_leaves": 31,
+        "min_child_samples": 20,
+        "best_iteration": 99
+      }
+    },
+    "beta_1y": {
+      "linear_raw": {
+        "alpha": 0.01
+      },
+      "lgbm_raw": {
+        "num_leaves": 8,
+        "min_child_samples": 400,
+        "best_iteration": 356
+      },
+      "linear_fe": {
+        "alpha": 100
+      },
+      "lgbm_fe": {
+        "num_leaves": 31,
+        "min_child_samples": 20,
+        "best_iteration": 218
+      }
+    },
+    "log_mcap": {
+      "linear_raw": {
+        "alpha": 0.01
+      },
+      "lgbm_raw": {
+        "num_leaves": 8,
+        "min_child_samples": 20,
+        "best_iteration": 729
+      },
+      "linear_fe": {
+        "alpha": 1
+      },
+      "lgbm_fe": {
+        "num_leaves": 8,
+        "min_child_samples": 20,
+        "best_iteration": 181
+      }
+    },
+    "liquidity_1m": {
+      "linear_raw": {
+        "alpha": 0.01
+      },
+      "lgbm_raw": {
+        "num_leaves": 8,
+        "min_child_samples": 100,
+        "best_iteration": 573
+      },
+      "linear_fe": {
+        "alpha": 100
+      },
+      "lgbm_fe": {
+        "num_leaves": 31,
+        "min_child_samples": 100,
+        "best_iteration": 119
+      }
+    },
+    "sector": {
+      "linear_raw": {
+        "C": 0.01
+      },
+      "lgbm_raw": {
+        "num_leaves": 31,
+        "min_child_samples": 400,
+        "best_iteration": 8
+      },
+      "linear_fe": {
+        "C": 0.01
+      },
+      "lgbm_fe": {
+        "num_leaves": 31,
+        "min_child_samples": 400,
+        "best_iteration": 32
+      }
+    }
+  }
+}

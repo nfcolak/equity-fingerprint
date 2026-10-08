@@ -40,6 +40,31 @@ Leakage controls: features see only data up to the feature date, targets only la
 ## Results
 
 <!-- results:start -->
+Test split (time targets: observations from 2024-01-01 on; grouped targets: held-out tickers). Main metric: R² for the four regression targets (on the log scale for `vol_1m`, `log_mcap`, `liquidity_1m`), macro-F1 for `sector`. Source: `results/metrics.csv`.
+
+| Target | Metric | Test obs | baseline | linear_raw | linear_fe | lgbm_raw | lgbm_fe |
+|---|---|---:|---:|---:|---:|---:|---:|
+| `vol_1m` | R² | 6473 | -0.047 | 0.490 | 0.609 | 0.520 | 0.624 |
+| `beta_1y` | R² | 4240 | -0.002 | 0.429 | 0.632 | 0.494 | 0.603 |
+| `log_mcap` | R² | 4365 | -0.122 | 0.808 | 0.762 | 0.690 | 0.689 |
+| `liquidity_1m` | R² | 6493 | -0.001 | 0.933 | 0.950 | 0.939 | 0.957 |
+| `sector` | macro-F1 | 4214 | 0.044 | 0.104 | 0.313 | 0.088 | 0.259 |
+
+What feature engineering changed (test metric, `fe` minus `raw`; R² for regression, macro-F1 for sector): linear: `vol_1m` +0.119, `beta_1y` +0.202, `log_mcap` -0.046, `liquidity_1m` +0.017, `sector` +0.209; lgbm: `vol_1m` +0.104, `beta_1y` +0.108, `log_mcap` -0.001, `liquidity_1m` +0.018, `sector` +0.171.
+
+Run 2026-10-09 (code at commit `a0561b5`): 207 tickers, 28016 month-end observations (2014-03-31 to 2026-09-30). Observations per target (train / val / test): `vol_1m` 16326 / 4326 / 6473; `beta_1y` 14272 / 2141 / 4240; `log_mcap` 18913 / 4587 / 4365; `liquidity_1m` 16385 / 4336 / 6493; `sector` 18762 / 4436 / 4214.
+
+Sector classes dropped (fewer than 5 tickers): Utilities (4).
+
+SHAP summaries of `lgbm_fe` on a test sample:
+
+- [`vol_1m`](results/shap_vol_1m.png)
+- [`beta_1y`](results/shap_beta_1y.png)
+- [`log_mcap`](results/shap_log_mcap.png)
+- [`liquidity_1m`](results/shap_liquidity_1m.png)
+- [`sector`](results/shap_sector.png)
+
+All metrics (validation and test, MAE/RMSE/QLIKE, accuracy, log loss): [`results/metrics.csv`](results/metrics.csv); feature gain: [`results/feature_importance.csv`](results/feature_importance.csv).
 <!-- results:end -->
 
 ## Limitations
