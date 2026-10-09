@@ -1,6 +1,6 @@
 {
   "run_date": "2026-10-09",
-  "git_sha": "a0561b5592a940ce76161f9d04848658124b599b",
+  "git_sha": "88c343c5528d423b32d06905f87b582ff9b18e54",
   "n_tickers": 207,
   "n_chf_tickers_with_prices": 213,
   "n_observations_total": 28016,
@@ -199,6 +199,14 @@
         "num_leaves": 8,
         "min_child_samples": 20,
         "best_iteration": 181
+      },
+      "linear_fe2": {
+        "alpha": 100
+      },
+      "lgbm_fe2": {
+        "num_leaves": 8,
+        "min_child_samples": 20,
+        "best_iteration": 127
       }
     },
     "liquidity_1m": {
@@ -235,7 +243,23 @@
         "num_leaves": 31,
         "min_child_samples": 400,
         "best_iteration": 32
+      },
+      "linear_fe2": {
+        "C": 0.01
+      },
+      "lgbm_fe2": {
+        "num_leaves": 31,
+        "min_child_samples": 400,
+        "best_iteration": 25
       }
     }
-  }
+  },
+  "robustness_seeds": [
+    42,
+    1,
+    2,
+    3,
+    4
+  ],
+  "runtime_seconds": 562.2
 }

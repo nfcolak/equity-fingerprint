@@ -15,10 +15,103 @@ TARGETS = ["vol_1m", "beta_1y", "log_mcap", "liquidity_1m", "sector"]
 MODELS = ["baseline", "linear_raw", "linear_fe", "lgbm_raw", "lgbm_fe"]
 MAIN = {t: ("macro_f1" if t == "sector" else "r2") for t in TARGETS}
 MAIN_LABEL = {"r2": "R²", "macro_f1": "macro-F1"}
+MODELS_V2 = ["baseline", "linear_raw", "linear_fe", "linear_fe2", "lgbm_raw", "lgbm_fe", "lgbm_fe2"]
+ROB_TARGETS = [("log_mcap", "r2"), ("sector", "macro_f1")]
 
 
 def _pick(df: pd.DataFrame, t: str, mod: str) -> pd.DataFrame:
     return df[(df.target == t) & (df.model == mod) & (df.metric == MAIN[t])]
+
+
+def _val(df: pd.DataFrame, t: str, mod: str, metric: str, split: str = "test"):
+    r = df[(df.target == t) & (df.model == mod) & (df.metric == metric) & (df.split == split)]
+    return float(r["value"].iloc[0]) if len(r) else None
+
+
+def _f(x, nd=3) -> str:
+    return "n/a" if x is None or pd.isna(x) else f"{x:.{nd}f}"
+
+
+def build_v2(results: Path) -> list[str]:
+    m = pd.read_csv(results / "metrics.csv")
+    rb = pd.read_csv(results / "robustness.csv")
+    rt = rb[rb["split"] == "test"]
+    seeds = sorted(rb["seed"].unique())
+    L = ["### v2: sector and market cap", "",
+         "Added `linear_fe2` / `lgbm_fe2` (features `fe2`) for the two grouped targets: the `fe` set plus rolling "
+         "252-day correlation and beta against equal-weight sector return indices (built from training-split "
+         "tickers only, leave-one-out for a training ticker's own sector) and cross-sectional size proxies "
+         "(log traded value minus the date median, and within-date ranks of log traded value and log close). "
+         "v1 models and numbers are unchanged. Test split, ticker split seed 42. Source: `results/metrics.csv`.",
+         "",
+         "| Target | Metric | " + " | ".join(MODELS_V2) + " |",
+         "|---|---|" + "|".join(["---:"] * len(MODELS_V2)) + "|"]
+    for t, met, lab in (("sector", "macro_f1", "macro-F1"), ("sector", "accuracy", "accuracy"),
+                        ("log_mcap", "r2", "R²"), ("log_mcap", "mae", "MAE")):
+        L.append(f"| `{t}` | {lab} | " + " | ".join(_f(_val(m, t, mod, met)) for mod in MODELS_V2) + " |")
+
+    L += ["", "Sector at ticker level (class probabilities averaged over a ticker's observations, then argmax). "
+          "Tickers: val / test = "
+          + " / ".join(str(int(m[(m.target == "sector") & (m.metric == "ticker_macro_f1") & (m.split == s_)]["n_obs"].iloc[0]))
+                       for s_ in ("val", "test")) + ".", "",
+          "| Model | Val accuracy | Val macro-F1 | Test accuracy | Test macro-F1 |", "|---|---:|---:|---:|---:|"]
+    for mod in MODELS_V2:
+        L.append(f"| {mod} | " + " | ".join(
+            _f(_val(m, "sector", mod, k, s_)) for s_ in ("val", "test") for k in ("ticker_accuracy", "ticker_macro_f1")) + " |")
+
+    ns = {t: sorted(rt[rt.target == t]["n_tickers"].unique().tolist()) for t, _ in ROB_TARGETS}
+    L += ["", f"Robustness over ticker-split seeds {', '.join(map(str, seeds))} (same 70/15/15 stratified split, PCA and sector "
+          "indices refitted per seed, tuned on validation, test scored once per seed). Test metric, mean ± sd over "
+          f"{len(seeds)} seeds. Test tickers per seed: `log_mcap` {ns['log_mcap']}, `sector` {ns['sector']}. "
+          "Source: `results/robustness.csv`.", "",
+          "| Model | `log_mcap` R² | `sector` macro-F1 |", "|---|---:|---:|"]
+    stats = {}
+    for mod in MODELS_V2:
+        cells = []
+        for t, met in ROB_TARGETS:
+            v = rt[(rt.target == t) & (rt.model == mod) & (rt.metric == met)]["value"]
+            stats[(t, mod)] = (v.mean(), v.std(ddof=1), len(v))
+            cells.append(f"{v.mean():.3f} ± {v.std(ddof=1):.3f}" if len(v) > 1 else "n/a")
+        L.append(f"| {mod} | " + " | ".join(cells) + " |")
+
+    def paired(t, met, a, b):
+        pa = rt[(rt.target == t) & (rt.model == a) & (rt.metric == met)].set_index("seed")["value"]
+        pb = rt[(rt.target == t) & (rt.model == b) & (rt.metric == met)].set_index("seed")["value"]
+        return (pb - pa).dropna()
+
+    d_fe = paired("log_mcap", "r2", "linear_raw", "linear_fe")
+    d_f2 = paired("sector", "macro_f1", "linear_fe", "linear_fe2")
+    g_f2 = paired("sector", "macro_f1", "lgbm_fe", "lgbm_fe2")
+    c_f2 = paired("log_mcap", "r2", "linear_fe", "linear_fe2")
+    c_g2 = paired("log_mcap", "r2", "lgbm_fe", "lgbm_fe2")
+    within = abs(d_fe.mean()) <= d_fe.std(ddof=1)
+    sd_all = rt[(rt.target == "log_mcap") & (rt.model == "linear_raw") & (rt.metric == "r2")]["value"].std(ddof=1)
+    L += ["",
+          "Test change from `fe` to `fe2` at seed 42: "
+          f"`sector` macro-F1 linear {(_val(m, 'sector', 'linear_fe2', 'macro_f1') - _val(m, 'sector', 'linear_fe', 'macro_f1')):+.3f}, "
+          f"lgbm {(_val(m, 'sector', 'lgbm_fe2', 'macro_f1') - _val(m, 'sector', 'lgbm_fe', 'macro_f1')):+.3f}; "
+          f"`log_mcap` R² linear {(_val(m, 'log_mcap', 'linear_fe2', 'r2') - _val(m, 'log_mcap', 'linear_fe', 'r2')):+.3f}, "
+          f"lgbm {(_val(m, 'log_mcap', 'lgbm_fe2', 'r2') - _val(m, 'log_mcap', 'lgbm_fe', 'r2')):+.3f}. "
+          f"Mean paired change over seeds (sd): `sector` macro-F1 linear {d_f2.mean():+.3f} ({d_f2.std(ddof=1):.3f}), "
+          f"lgbm {g_f2.mean():+.3f} ({g_f2.std(ddof=1):.3f}); `log_mcap` R² linear {c_f2.mean():+.3f} ({c_f2.std(ddof=1):.3f}), "
+          f"lgbm {c_g2.mean():+.3f} ({c_g2.std(ddof=1):.3f}).",
+          "",
+          "The v1 `log_mcap` gap (`linear_fe` minus `linear_raw`, test R²) is "
+          f"{_val(m, 'log_mcap', 'linear_fe', 'r2') - _val(m, 'log_mcap', 'linear_raw', 'r2'):+.3f} at seed 42; "
+          f"across the {len(d_fe)} seeds the paired gap has mean {d_fe.mean():+.3f} and sd {d_fe.std(ddof=1):.3f} "
+          f"(range {d_fe.min():+.3f} to {d_fe.max():+.3f}), so the mean gap is "
+          + ("within" if within else "larger than") + " one seed-to-seed sd. "
+          f"The seed-to-seed sd of `linear_raw` test R² itself is {sd_all:.3f}.",
+          ""]
+    info_path = results / "run_info.json"
+    if info_path.exists():
+        info = json.loads(info_path.read_text())
+        if "runtime_seconds" in info:
+            L += [f"Full pipeline run time (all five targets, v2 models and the {len(seeds)}-seed robustness reruns, "
+                  f"CPU): {info['runtime_seconds'] / 60:.1f} min. Ticker-level `n_obs` in `metrics.csv` counts tickers.", ""]
+    L += ["SHAP summaries of `lgbm_fe2` on a test sample:", "",
+          "- [`sector`](results/shap_sector_fe2.png)", "- [`log_mcap`](results/shap_log_mcap_fe2.png)", ""]
+    return L
 
 
 def build_block(results: Path) -> str:
@@ -73,7 +166,8 @@ def build_block(results: Path) -> str:
         lines.append("")
     lines += ["SHAP summaries of `lgbm_fe` on a test sample:", ""]
     lines += [f"- [`{t}`](results/shap_{t}.png)" for t in TARGETS]
-    lines += ["", "All metrics (validation and test, MAE/RMSE/QLIKE, accuracy, log loss): "
+    lines += [""] + build_v2(results)
+    lines += ["All metrics (validation and test, MAE/RMSE/QLIKE, accuracy, log loss): "
               "[`results/metrics.csv`](results/metrics.csv); feature gain: "
               "[`results/feature_importance.csv`](results/feature_importance.csv)."]
     return "\n".join(lines)

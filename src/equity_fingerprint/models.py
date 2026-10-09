@@ -1,6 +1,7 @@
 """Preprocessing, models and metrics.
 
-Models per target: baseline, linear_raw, linear_fe, lgbm_raw, lgbm_fe.
+Models per target: baseline, linear_raw, linear_fe, lgbm_raw, lgbm_fe (+ linear_fe2, lgbm_fe2 for the
+grouped targets sector / log_mcap when ``fe2_cols`` is given).
 Everything is fitted on train; hyper-parameters / early stopping use validation; test is scored once.
 """
 from __future__ import annotations
@@ -23,6 +24,7 @@ LOGIT_CS = [0.01, 0.1, 1, 10]
 LGBM_GRID = [dict(num_leaves=nl, min_child_samples=mcs)
              for nl, mcs in itertools.product([8, 31], [20, 100, 400])]
 MODELS = ["baseline", "linear_raw", "linear_fe", "lgbm_raw", "lgbm_fe"]
+MODELS_V2 = MODELS + ["linear_fe2", "lgbm_fe2"]
 
 
 # --------------------------------------------------------------------------- preprocessing
@@ -121,9 +123,18 @@ def fit_logit(Xtr, ytr, Xva, yva):
     return best[1], best[2]
 
 
+def ticker_level_metrics(part: pd.DataFrame, y_col: str, proba, classes) -> dict[str, float]:
+    """Static labels: average class probabilities over a ticker's observations, argmax, score per ticker."""
+    P = pd.DataFrame(np.asarray(proba), index=part["ticker"].to_numpy()).groupby(level=0).mean()
+    truth = part.groupby("ticker")[y_col].first().reindex(P.index)
+    pred = np.asarray(classes)[np.argmax(P.to_numpy(), axis=1)]
+    return {"ticker_accuracy": accuracy_score(truth, pred),
+            "ticker_macro_f1": f1_score(truth, pred, average="macro"), "_n": len(P)}
+
+
 def run_target(name: str, df: pd.DataFrame, y_col: str, raw_cols: list[str], fe_cols: list[str],
-               classification: bool, with_qlike: bool = False):
-    """Fit all five models on df[split=='train']; return (metric rows, fitted lgbm_fe + test frame, extras)."""
+               classification: bool, with_qlike: bool = False, fe2_cols: list[str] | None = None):
+    """Fit all models on df[split=='train']; return (metric rows, fitted lgbm models + test frames, hp, classes)."""
     tr, va, te = (df[df["split"] == s] for s in ("train", "val", "test"))
     classes = np.array(sorted(tr[y_col].unique())) if classification else None
     rows, info = [], {}
@@ -134,6 +145,12 @@ def run_target(name: str, df: pd.DataFrame, y_col: str, raw_cols: list[str], fe_
         for k, v in met.items():
             rows.append(dict(target=name, model=model, features=feats, split=split,
                              metric=k, value=float(v), n_obs=len(part)))
+        if classification:  # ticker-level rows: n_obs = number of tickers
+            tm = ticker_level_metrics(part, y_col, pred, classes)
+            n = tm.pop("_n")
+            for k, v in tm.items():
+                rows.append(dict(target=name, model=model, features=feats, split=split,
+                                 metric=k, value=float(v), n_obs=n))
 
     # baseline
     for split, part in (("val", va), ("test", te)):
@@ -145,12 +162,18 @@ def run_target(name: str, df: pd.DataFrame, y_col: str, raw_cols: list[str], fe_
             for k, v in met.items():
                 rows.append(dict(target=name, model="baseline", features="none", split=split,
                                  metric=k, value=float(v), n_obs=len(part)))
+            tm = ticker_level_metrics(part, y_col, proba, classes)
+            n = tm.pop("_n")
+            for k, v in tm.items():
+                rows.append(dict(target=name, model="baseline", features="none", split=split,
+                                 metric=k, value=float(v), n_obs=n))
         else:
             base_v = float(np.var(va[y_col] - tr[y_col].mean()))
             add("baseline", "none", split, part, np.full(len(part), tr[y_col].mean()), base_v)
 
     fitted = {}
-    for feats, cols in (("raw", raw_cols), ("fe", fe_cols)):
+    sets = [("raw", raw_cols), ("fe", fe_cols)] + ([("fe2", fe2_cols)] if fe2_cols else [])
+    for feats, cols in sets:
         # linear
         pl = Prep(cols, linear=True).fit(tr)
         Xtr, Xva, Xte = (pl.transform(d) for d in (tr, va, te))

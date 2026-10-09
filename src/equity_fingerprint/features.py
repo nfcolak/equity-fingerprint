@@ -252,3 +252,82 @@ def pc_loadings(p: Panel, F: pd.DataFrame, pos: np.ndarray) -> pd.DataFrame:
     df.insert(0, "ticker", np.tile(np.array(p.tickers, dtype=object), len(pos)))
     df.insert(0, "pos", np.repeat(pos, nt))
     return df
+
+
+# --------------------------------------------------------------------------- v2: sector co-movement and size proxies
+SIZE_FEATURES = ["tv21_rel", "tv252_rel", "tv21_rank", "tv252_rank", "close_rank"]
+SECTOR_WINDOW = 252
+
+LABELS.update({
+    "tv21_rel": "Log traded value 21d minus date median", "tv252_rel": "Log traded value 252d minus date median",
+    "tv21_rank": "Rank of log traded value 21d (date)", "tv252_rank": "Rank of log traded value 252d (date)",
+    "close_rank": "Rank of log close (date)",
+})
+
+
+def _slug(s: str) -> str:
+    return "".join(ch if ch.isalnum() else "_" for ch in s.lower()).strip("_")
+
+
+def size_features(base: pd.DataFrame) -> pd.DataFrame:
+    """Cross-sectional size proxies at each observation date (uses only that date's data, no labels)."""
+    g = base.groupby("date")
+    out = pd.DataFrame(index=base.index)
+    out["tv21_rel"] = base["log_tv_21"] - g["log_tv_21"].transform("median")
+    out["tv252_rel"] = base["log_tv_252"] - g["log_tv_252"].transform("median")
+    out["tv21_rank"] = g["log_tv_21"].rank(pct=True)
+    out["tv252_rank"] = g["log_tv_252"].rank(pct=True)
+    out["close_rank"] = g["log_close"].rank(pct=True)
+    return out
+
+
+def _window_stats(X: np.ndarray, Y: np.ndarray, pos: np.ndarray, w: int):
+    """Column-wise correlation and beta of X on Y over the w rows ending at each position (inclusive)."""
+    corr = np.full((len(pos), X.shape[1]), np.nan)
+    beta = np.full_like(corr, np.nan)
+    for k, i in enumerate(pos):
+        x, y = X[i - w + 1:i + 1], Y[i - w + 1:i + 1]
+        xc, yc = x - x.mean(0), y - y.mean(0)
+        cov = (xc * yc).sum(0) / (w - 1)
+        vx, vy = (xc ** 2).sum(0) / (w - 1), (yc ** 2).sum(0) / (w - 1)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            c = cov / np.sqrt(vx * vy)
+            b = cov / vy
+        dead = vx <= 1e-14
+        corr[k], beta[k] = np.where(dead, 0.0, c), np.where(dead, 0.0, b)
+    return corr, beta
+
+
+def sector_features(p: Panel, pos: np.ndarray, train_tickers: list[str], sec_map: dict[str, str]):
+    """Rolling 252d correlation / beta of each ticker with an equal-weight return index per sector.
+
+    Each index uses only ``train_tickers`` (with their sector labels from ``sec_map``). For a training
+    ticker its own sector index excludes itself (leave-one-out); val/test tickers never enter any index.
+    Returns (frame keyed by pos, ticker, list of feature names).
+    """
+    R = p.ret
+    Rv = R.to_numpy()
+    Rf = np.nan_to_num(Rv, nan=0.0)
+    N = (~np.isnan(Rv)).astype(float)
+    ti = {t: j for j, t in enumerate(p.tickers)}
+    nt = len(p.tickers)
+    classes = sorted({sec_map[t] for t in train_tickers if t in sec_map and t in ti})
+    data, names = {}, []
+    for k in classes:
+        mem = [ti[t] for t in train_tickers if sec_map.get(t) == k and t in ti]
+        s_sum, s_cnt = Rf[:, mem].sum(1), N[:, mem].sum(1)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            S = np.where(s_cnt > 0, s_sum / s_cnt, np.nan)
+            cnt_loo = s_cnt[:, None] - N[:, mem]
+            loo = np.where(cnt_loo > 0, (s_sum[:, None] - Rf[:, mem]) / cnt_loo, np.nan)
+        Y = np.repeat(S[:, None], nt, axis=1)
+        Y[:, mem] = loo
+        corr, beta = _window_stats(Rv, Y, pos, SECTOR_WINDOW)
+        data[f"sec_corr_{_slug(k)}"], data[f"sec_beta_{_slug(k)}"] = corr.ravel(), beta.ravel()
+        names += [f"sec_corr_{_slug(k)}", f"sec_beta_{_slug(k)}"]
+        LABELS[f"sec_corr_{_slug(k)}"] = f"Correlation with {k} index (252d)"
+        LABELS[f"sec_beta_{_slug(k)}"] = f"Beta vs {k} index (252d)"
+    df = pd.DataFrame(data)
+    df.insert(0, "ticker", np.tile(np.array(p.tickers, dtype=object), len(pos)))
+    df.insert(0, "pos", np.repeat(pos, nt))
+    return df, names

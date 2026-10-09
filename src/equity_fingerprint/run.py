@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from datetime import date
 from pathlib import Path
 
@@ -22,6 +23,9 @@ from . import targets as T  # noqa: E402
 from .data import _data_dir  # noqa: E402
 from .models import run_target  # noqa: E402
 
+ROB_SEEDS = [42, 1, 2, 3, 4]
+ROB_METRICS = {"log_mcap": "r2", "sector": "macro_f1"}
+
 ROOT = Path(__file__).resolve().parents[2]
 RESULTS = ROOT / "results"
 SHAP_SAMPLE = 1500
@@ -34,7 +38,7 @@ def git_sha() -> str:
         return "unknown"
 
 
-def shap_plot(target: str, model, Xte: pd.DataFrame, classes, path: Path) -> None:
+def shap_plot(target: str, model, Xte: pd.DataFrame, classes, path: Path, model_name: str = "lgbm_fe") -> None:
     X = Xte.sample(min(SHAP_SAMPLE, len(Xte)), random_state=T.SEED)
     names = [F.LABELS.get(c, c) for c in X.columns]
     sv = shap.TreeExplainer(model).shap_values(X)
@@ -44,17 +48,53 @@ def shap_plot(target: str, model, Xte: pd.DataFrame, classes, path: Path) -> Non
             sv = [sv[:, :, k] for k in range(sv.shape[2])]
         shap.summary_plot(sv, X, feature_names=names, plot_type="bar", class_names=list(classes),
                           max_display=15, show=False)
-        plt.title(f"{target}: mean |SHAP| by class (lgbm_fe, test sample)")
+        plt.title(f"{target}: mean |SHAP| by class (" + model_name + ", test sample)")
     else:
         shap.summary_plot(sv, X, feature_names=names, max_display=15, show=False)
-        plt.title(f"{target}: SHAP summary (lgbm_fe, test sample)")
+        plt.title(f"{target}: SHAP summary ({model_name}, test sample)")
     plt.gcf().set_size_inches(10, 7)
     plt.tight_layout()
     plt.savefig(path, dpi=130, bbox_inches="tight")
     plt.close("all")
 
 
+def grouped_datasets(panel, base, pos, tickers, sec_all, sec_map, seed: int):
+    """Ticker split for ``seed`` and the log_mcap / sector datasets (PCA + sector indices fit on its train tickers)."""
+    tsplit = T.ticker_split(tickers, sec_all.to_dict(), seed)
+    train_tickers = [t for t in tickers if tsplit[t] == "train"]
+    keys = ["pos", "ticker"]
+    grp_df = base.merge(F.pc_loadings(panel, F.pc_factors(panel, train_tickers), pos), on=keys, how="left")
+    sec_df, sec_cols = F.sector_features(panel, pos, train_tickers, sec_map)
+    grp_df = grp_df.merge(sec_df, on=keys, how="left")
+    size = F.size_features(base)
+    for c in F.SIZE_FEATURES:
+        grp_df[c] = size[c].to_numpy()
+    grp_df["log_mcap"] = T.log_mcap_target(panel, grp_df)
+    grp_df["tsplit"] = grp_df["ticker"].map(tsplit)
+    ds = {}
+    d = grp_df[grp_df["log_mcap"].notna()].copy()
+    d["split"] = d["tsplit"]
+    ds["log_mcap"] = d
+    d = grp_df[grp_df["ticker"].isin(sec_map)].copy()
+    d["sector"] = d["ticker"].map(sec_map)
+    d["split"] = d["tsplit"]
+    ds["sector"] = d
+    return ds, F.FE_FEATURES + F.SIZE_FEATURES + sec_cols
+
+
+def robustness_rows(seed: int, rows: list[dict], ds: dict) -> list[dict]:
+    out = []
+    for r in rows:
+        if r["split"] in ("val", "test") and r["metric"] == ROB_METRICS[r["target"]]:
+            d = ds[r["target"]]
+            out.append(dict(target=r["target"], model=r["model"], features=r["features"], seed=seed,
+                            split=r["split"], metric=r["metric"], value=r["value"],
+                            n_tickers=int(d.loc[d["split"] == r["split"], "ticker"].nunique())))
+    return out
+
+
 def main() -> None:
+    t_start = time.time()
     RESULTS.mkdir(exist_ok=True)
     data_dir = _data_dir()
     panel = F.build_panel()
@@ -74,15 +114,12 @@ def main() -> None:
     # ---- return-structure (PCA) features: time targets use all tickers, grouped targets train tickers only
     keys = ["pos", "ticker"]
     L_time = F.pc_loadings(panel, F.pc_factors(panel, tickers), pos)
-    L_grp = F.pc_loadings(panel, F.pc_factors(panel, train_tickers), pos)
     time_df = base.merge(L_time, on=keys, how="left")
-    grp_df = base.merge(L_grp, on=keys, how="left")
+    grp_ds, fe2_cols = grouped_datasets(panel, base, pos, tickers, sec_all, sec_map, T.SEED)
 
     # ---- targets
     ft = T.forward_targets(panel, time_df)
     time_df = pd.concat([time_df, ft], axis=1)
-    grp_df["log_mcap"] = T.log_mcap_target(panel, grp_df)
-    grp_df["tsplit"] = grp_df["ticker"].map(tsplit)
 
     datasets, n_info = {}, {}
     for t in T.TIME_TARGETS:
@@ -96,22 +133,20 @@ def main() -> None:
             n_info[t]["dropped_zero_vol_windows"] = int(d["vol_1m_floored"].sum())
             d = d[~d["vol_1m_floored"]]
         datasets[t] = d
-    d = grp_df[grp_df["log_mcap"].notna()].copy()
-    d["split"] = d["tsplit"]
-    datasets["log_mcap"] = d
-    d = grp_df[grp_df["ticker"].isin(sec_map)].copy()
-    d["sector"] = d["ticker"].map(sec_map)
-    d["split"] = d["tsplit"]
-    datasets["sector"] = d
+    datasets.update(grp_ds)
 
     # ---- models
-    metrics, imps, hps = [], [], {}
+    metrics, imps, hps, rob = [], [], {}, []
     for t in T.TARGETS:
         d = datasets[t]
         clf = t == "sector"
         print(f"[{t}] " + ", ".join(f"{s}={int((d['split'] == s).sum())}" for s in ("train", "val", "test")))
+        grouped = t in T.GROUP_TARGETS
         rows, fitted, info, classes = run_target(t, d, t, F.RAW_FEATURES, F.FE_FEATURES, clf,
-                                                 with_qlike=(t == "vol_1m"))
+                                                 with_qlike=(t == "vol_1m"),
+                                                 fe2_cols=fe2_cols if grouped else None)
+        if grouped:
+            rob += robustness_rows(T.SEED, rows, datasets)
         metrics += rows
         hps[t] = info
         m, Xte = fitted["lgbm_fe"]
@@ -120,10 +155,28 @@ def main() -> None:
                                   "label": [F.LABELS.get(c, c) for c in Xte.columns],
                                   "gain": gain, "gain_share": gain / gain.sum()}))
         shap_plot(t, m, Xte, classes, RESULTS / f"shap_{t}.png")
+        if grouped:
+            m2, Xte2 = fitted["lgbm_fe2"]
+            shap_plot(t, m2, Xte2, classes, RESULTS / f"shap_{t}_fe2.png", "lgbm_fe2")
         res = pd.DataFrame(rows)
         te = res[(res.split == "test") & (res.metric == ("macro_f1" if clf else "r2"))]
         print("   test " + ("macro_f1" if clf else "r2") + ": " +
               ", ".join(f"{r.model}={r.value:.3f}" for r in te.itertuples()))
+
+    # ---- robustness of the grouped targets over ticker-split seeds (seed 42 = the main run above)
+    for seed in ROB_SEEDS:
+        if seed == T.SEED:
+            continue
+        t0 = time.time()
+        ds, cols2 = grouped_datasets(panel, base, pos, tickers, sec_all, sec_map, seed)
+        for t in T.GROUP_TARGETS:
+            rows, _, _, _ = run_target(t, ds[t], t, F.RAW_FEATURES, F.FE_FEATURES, t == "sector", fe2_cols=cols2)
+            rob += robustness_rows(seed, rows, ds)
+        print(f"[robustness] seed {seed} done in {time.time() - t0:.0f}s")
+    rob_df = pd.DataFrame(rob)
+    rob_df["_s"] = rob_df["seed"].map({s_: i for i, s_ in enumerate(ROB_SEEDS)})
+    rob_df = rob_df.sort_values(["target", "_s"], kind="stable").drop(columns="_s")
+    rob_df.to_csv(RESULTS / "robustness.csv", index=False)
 
     pd.DataFrame(metrics).to_csv(RESULTS / "metrics.csv", index=False)
     pd.concat(imps).sort_values(["target", "gain"], ascending=[True, False]).to_csv(
@@ -157,6 +210,8 @@ def main() -> None:
         "data_manifest": {k: manifest[k] for k in keep if k in manifest}
                          | {"n_failed_tickers": len(manifest.get("failed_tickers", {}))},
         "chosen_hyperparameters": hps,
+        "robustness_seeds": ROB_SEEDS,
+        "runtime_seconds": round(time.time() - t_start, 1),
     }
     (RESULTS / "run_info.json").write_text(json.dumps(info, indent=2, default=str))
     print("[done] results written to", RESULTS)

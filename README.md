@@ -52,7 +52,7 @@ Test split (time targets: observations from 2024-01-01 on; grouped targets: held
 
 What feature engineering changed (test metric, `fe` minus `raw`; R² for regression, macro-F1 for sector): linear: `vol_1m` +0.119, `beta_1y` +0.202, `log_mcap` -0.046, `liquidity_1m` +0.017, `sector` +0.209; lgbm: `vol_1m` +0.104, `beta_1y` +0.108, `log_mcap` -0.001, `liquidity_1m` +0.018, `sector` +0.171.
 
-Run 2026-10-09 (code at commit `a0561b5`): 207 tickers, 28016 month-end observations (2014-03-31 to 2026-09-30). Observations per target (train / val / test): `vol_1m` 16326 / 4326 / 6473; `beta_1y` 14272 / 2141 / 4240; `log_mcap` 18913 / 4587 / 4365; `liquidity_1m` 16385 / 4336 / 6493; `sector` 18762 / 4436 / 4214.
+Run 2026-10-09 (code at commit `88c343c`): 207 tickers, 28016 month-end observations (2014-03-31 to 2026-09-30). Observations per target (train / val / test): `vol_1m` 16326 / 4326 / 6473; `beta_1y` 14272 / 2141 / 4240; `log_mcap` 18913 / 4587 / 4365; `liquidity_1m` 16385 / 4336 / 6493; `sector` 18762 / 4436 / 4214.
 
 Sector classes dropped (fewer than 5 tickers): Utilities (4).
 
@@ -63,6 +63,52 @@ SHAP summaries of `lgbm_fe` on a test sample:
 - [`log_mcap`](results/shap_log_mcap.png)
 - [`liquidity_1m`](results/shap_liquidity_1m.png)
 - [`sector`](results/shap_sector.png)
+
+### v2: sector and market cap
+
+Added `linear_fe2` / `lgbm_fe2` (features `fe2`) for the two grouped targets: the `fe` set plus rolling 252-day correlation and beta against equal-weight sector return indices (built from training-split tickers only, leave-one-out for a training ticker's own sector) and cross-sectional size proxies (log traded value minus the date median, and within-date ranks of log traded value and log close). v1 models and numbers are unchanged. Test split, ticker split seed 42. Source: `results/metrics.csv`.
+
+| Target | Metric | baseline | linear_raw | linear_fe | linear_fe2 | lgbm_raw | lgbm_fe | lgbm_fe2 |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| `sector` | macro-F1 | 0.044 | 0.104 | 0.313 | 0.323 | 0.088 | 0.259 | 0.238 |
+| `sector` | accuracy | 0.248 | 0.244 | 0.430 | 0.433 | 0.287 | 0.389 | 0.370 |
+| `log_mcap` | R² | -0.122 | 0.808 | 0.762 | 0.765 | 0.690 | 0.689 | 0.700 |
+| `log_mcap` | MAE | 1.614 | 0.643 | 0.718 | 0.709 | 0.823 | 0.767 | 0.749 |
+
+Sector at ticker level (class probabilities averaged over a ticker's observations, then argmax). Tickers: val / test = 32 / 32.
+
+| Model | Val accuracy | Val macro-F1 | Test accuracy | Test macro-F1 |
+|---|---:|---:|---:|---:|
+| baseline | 0.250 | 0.044 | 0.250 | 0.044 |
+| linear_raw | 0.312 | 0.125 | 0.219 | 0.066 |
+| linear_fe | 0.594 | 0.431 | 0.594 | 0.414 |
+| linear_fe2 | 0.625 | 0.453 | 0.594 | 0.414 |
+| lgbm_raw | 0.250 | 0.071 | 0.281 | 0.083 |
+| lgbm_fe | 0.594 | 0.300 | 0.500 | 0.282 |
+| lgbm_fe2 | 0.594 | 0.300 | 0.500 | 0.284 |
+
+Robustness over ticker-split seeds 1, 2, 3, 4, 42 (same 70/15/15 stratified split, PCA and sector indices refitted per seed, tuned on validation, test scored once per seed). Test metric, mean ± sd over 5 seeds. Test tickers per seed: `log_mcap` [33], `sector` [32]. Source: `results/robustness.csv`.
+
+| Model | `log_mcap` R² | `sector` macro-F1 |
+|---|---:|---:|
+| baseline | -0.072 ± 0.067 | 0.046 ± 0.002 |
+| linear_raw | 0.809 ± 0.036 | 0.121 ± 0.010 |
+| linear_fe | 0.826 ± 0.045 | 0.290 ± 0.025 |
+| linear_fe2 | 0.828 ± 0.043 | 0.318 ± 0.030 |
+| lgbm_raw | 0.792 ± 0.071 | 0.091 ± 0.011 |
+| lgbm_fe | 0.811 ± 0.071 | 0.224 ± 0.031 |
+| lgbm_fe2 | 0.815 ± 0.067 | 0.229 ± 0.022 |
+
+Test change from `fe` to `fe2` at seed 42: `sector` macro-F1 linear +0.010, lgbm -0.021; `log_mcap` R² linear +0.003, lgbm +0.011. Mean paired change over seeds (sd): `sector` macro-F1 linear +0.028 (0.019), lgbm +0.005 (0.015); `log_mcap` R² linear +0.001 (0.006), lgbm +0.003 (0.005).
+
+The v1 `log_mcap` gap (`linear_fe` minus `linear_raw`, test R²) is -0.046 at seed 42; across the 5 seeds the paired gap has mean +0.017 and sd 0.037 (range -0.046 to +0.052), so the mean gap is within one seed-to-seed sd. The seed-to-seed sd of `linear_raw` test R² itself is 0.036.
+
+Full pipeline run time (all five targets, v2 models and the 5-seed robustness reruns, CPU): 9.4 min. Ticker-level `n_obs` in `metrics.csv` counts tickers.
+
+SHAP summaries of `lgbm_fe2` on a test sample:
+
+- [`sector`](results/shap_sector_fe2.png)
+- [`log_mcap`](results/shap_log_mcap_fe2.png)
 
 All metrics (validation and test, MAE/RMSE/QLIKE, accuracy, log loss): [`results/metrics.csv`](results/metrics.csv); feature gain: [`results/feature_importance.csv`](results/feature_importance.csv).
 <!-- results:end -->
