@@ -17,8 +17,19 @@ Inferring equity metadata from market data. Predict five characteristics of Swis
 | SIX issuer list `https://www.six-group.com/sheldon/equity_issuers/v1/equity_issuers.csv` (`;`-separated, latin-1) | Universe: rows with `Primary listing == TRUE`; yfinance ticker = `<Symbol>.SW` |
 | yfinance daily OHLCV | Stock prices/volume; market index `^SSHI` (SPI, from 2013-03) and `^SSMI` (SMI) |
 | yfinance `Ticker.info` snapshot | Labels: `sector`, `industry`, `sharesOutstanding`, `marketCap` |
+| Free index constituent lists (Wikipedia: S&P 500/400/600, FTSE 100/250, DAX/MDAX/SDAX, CAC 40/SBF 120, AEX/AMX, IBEX 35, FTSE MIB, OMX 30/25, OBX, BEL 20, ATX, PSI) + yfinance | v4 pretraining universe only (non-Swiss stocks): `data/pretrain/` (override `EF_PRETRAIN_DIR`) |
 
 yfinance is unofficial and for personal/research use. The universe is today's listing (survivorship bias); say so in the README.
+
+## v4: Fingerprint encoder (user decision 2026-10-10)
+
+| Rule | Why |
+|---|---|
+| A self-supervised encoder (masked patch modelling + contrastive) is pretrained on NON-Swiss stocks (Europe + US, ~3-5k) on data up to 2021-12-31 only. No `.SW` ticker and no date after 2021-12-31 ever enters pretraining. | Swiss evaluation stays a clean transfer test; no look-ahead. |
+| Non-Swiss sector/size labels may be used as auxiliary pretraining heads; Swiss labels only in fine-tuning on each target's train split. | Swiss test labels never touch the encoder. |
+| Swiss evaluation is unchanged: same targets, splits, seeds, metrics. New rows are added (`*_fp*`, `fpnet`); v1-v3 rows stay bit-identical. | Comparable to the existing benchmark. |
+| GPU training runs on Kaggle (free T4/P100), approved by the user 2026-10-10. Code must also run a tiny CPU smoke (`--device cpu`). | User approval; testable locally. |
+| torch is a project dependency (CPU on the Mac, CUDA on Kaggle). | v4 model code. |
 
 ## Targets
 
@@ -34,6 +45,7 @@ yfinance is unofficial and for personal/research use. The universe is today's li
 
 | Rule | Why |
 |---|---|
+| Universe: Swiss stocks only (SIX primary listings, SPI universe) for every evaluation; non-Swiss stocks only as v4 pretraining data. | User decisions 2026-10-09 and 2026-10-10. |
 | Features use only data up to the feature date; targets only data after it (except `log_mcap`, `sector`, which are contemporaneous/static and therefore split by ticker). | No look-ahead leakage. |
 | Time splits: train ≤ 2021-12-31, validation 2022-01-01..2023-12-31, test ≥ 2024-01-01. Fit scalers/winsorization on train only. Tune on validation; score test once. | Honest out-of-sample numbers. |
 | Every result number in README comes from a committed file under `results/`. Never invent or round-trip numbers by hand. | Evidence. |
