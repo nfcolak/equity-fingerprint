@@ -6,3 +6,4 @@ lightgbm
 shap
 matplotlib
 pyarrow
+torch
