@@ -5,6 +5,7 @@ Run: env -u PYTHONPATH PYTHONPATH=src python -m equity_fingerprint.run
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from datetime import date
@@ -22,7 +23,7 @@ from . import features as F  # noqa: E402
 from . import targets as T  # noqa: E402
 from .data import _data_dir  # noqa: E402
 from .embed import sector_profile_features  # noqa: E402
-from .models import run_target  # noqa: E402
+from .models import classification_metrics, regression_metrics, run_target, ticker_level_metrics  # noqa: E402
 
 ROB_SEEDS = [42, 1, 2, 3, 4]
 ROB_METRICS = {"log_mcap": "r2", "sector": "macro_f1"}
@@ -30,6 +31,8 @@ ROB_METRICS = {"log_mcap": "r2", "sector": "macro_f1"}
 ROOT = Path(__file__).resolve().parents[2]
 RESULTS = ROOT / "results"
 SHAP_SAMPLE = 1500
+KEYS = ["pos", "ticker"]
+FT_MODELS = {"fpnet": "fp_e2e", "fpnet_a": "fpa_e2e"}  # v4 fine-tuned models -> features label
 
 
 def git_sha() -> str:
@@ -98,6 +101,95 @@ def robustness_rows(seed: int, rows: list[dict], ds: dict) -> list[dict]:
     return out
 
 
+# --------------------------------------------------------------------------- v4: fingerprint encoder
+def fp_dir() -> Path:
+    return Path(os.environ.get("EF_FP_DIR") or ROOT / "data" / "fingerprint")
+
+
+def load_fp(d: Path):
+    """Frozen embeddings (fp_* from arm ssl, fpa_* from ssl_aux) keyed by pos/ticker; missing files are skipped."""
+    frames, cols = [], {"fp": [], "fpa": []}
+    for arm, pre in (("ssl", "fp"), ("ssl_aux", "fpa")):
+        path = d / f"fp_embeddings_{arm}.parquet"
+        if not path.exists():
+            continue
+        e = pd.read_parquet(path).drop(columns="date")
+        e.columns = [c if c in KEYS else c.replace("fp_", f"{pre}_", 1) for c in e.columns]
+        cols[pre] = [c for c in e.columns if c not in KEYS]
+        frames.append(e)
+    return frames, cols
+
+
+def merge_fp(ds: dict, frames: list) -> dict:
+    """Left-merge the embeddings into every dataset (row order unchanged)."""
+    for e in frames:
+        ds = {t: d.merge(e, on=KEYS, how="left") for t, d in ds.items()}
+    return ds
+
+
+def fp_sets(cols: dict) -> list[tuple[str, list[str]]]:
+    sets = [("fp", cols["fp"])] if cols["fp"] else []
+    if cols["fpa"]:
+        sets += [("fpa", cols["fpa"]), ("fefpa", F.FE_FEATURES + cols["fpa"])]
+    return sets
+
+
+def ft_target_rows(name: str, feats: str, t: str, d: pd.DataFrame, pt: pd.DataFrame) -> list[dict]:
+    """Metric rows (same layout as ``run_target``) for the fine-tuned predictions of one target."""
+    clf = t == "sector"
+    classes = np.array(sorted(d.loc[d["split"] == "train", t].unique())) if clf else None
+    pcols = [f"proba_{c}" for c in classes] if clf else ["pred"]
+    if not set(pcols) <= set(pt.columns):
+        return []
+    parts = {s: d[d["split"] == s].merge(pt.loc[pt["split"] == s, KEYS + pcols], on=KEYS) for s in ("val", "test")}
+    rv = 0.0
+    if t == "vol_1m":
+        rv = float(np.var(parts["val"][t] - parts["val"]["pred"]))
+    rows = []
+    for split, part in parts.items():
+        if clf:
+            proba = part[pcols].to_numpy()
+            met = classification_metrics(part[t], proba, classes)
+            tm = ticker_level_metrics(part, t, proba, classes)
+            n_tick = tm.pop("_n")
+        else:
+            met = regression_metrics(part[t], part["pred"], t == "vol_1m", rv)
+        for k, v in met.items():
+            rows.append(dict(target=t, model=name, features=feats, split=split, metric=k, value=float(v), n_obs=len(part)))
+        if clf:
+            for k, v in tm.items():
+                rows.append(dict(target=t, model=name, features=feats, split=split, metric=k, value=float(v), n_obs=n_tick))
+    return rows
+
+
+def ft_rows(d: Path, seed: int, ds: dict) -> list[dict]:
+    rows = []
+    for name, feats in FT_MODELS.items():
+        path = d / f"{name}_preds_seed{seed}.parquet"
+        if not path.exists():
+            continue
+        preds = pd.read_parquet(path)
+        for t in ds:
+            pt = preds[preds["target"] == t]
+            if len(pt):
+                rows += ft_target_rows(name, feats, t, ds[t], pt)
+    return rows
+
+
+def label_frame(seed: int, ds: dict) -> pd.DataFrame:
+    """Long-format labels of the datasets; ``y`` is stored as text (sector names and floats share a column)."""
+    return pd.concat([pd.DataFrame({"seed": seed, "target": t, "pos": d["pos"].to_numpy(),
+                                    "ticker": d["ticker"].to_numpy(), "date": d["date"].to_numpy(),
+                                    "y": d[t].astype(str).to_numpy(), "split": d["split"].to_numpy()})
+                      for t, d in ds.items()], ignore_index=True)
+
+
+def dump_labels(path: Path, frames: list) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    pd.concat(frames, ignore_index=True).to_parquet(path / "labels.parquet", index=False)
+    print("[labels] written to", path / "labels.parquet")
+
+
 def main() -> None:
     t_start = time.time()
     RESULTS.mkdir(exist_ok=True)
@@ -147,6 +239,24 @@ def main() -> None:
     datasets["vol_1m"] = datasets["vol_1m"].merge(vol_features(panel, datasets["vol_1m"][keys]), on=keys, how="left")
     EXTRA_SETS["vol_1m"] = [("har", HAR_COLS), ("fe3", F.FE_FEATURES + HAR_COLS + GARCH_COLS + MKT_COLS)]
 
+    # ---- v4: label export (seed 42; robustness seeds are added below)
+    dump = os.environ.get("EF_DUMP_LABELS")
+    labels = [label_frame(T.SEED, datasets)] if dump else []
+    if dump and os.environ.get("EF_LABELS_ONLY") == "1":
+        for seed in ROB_SEEDS:
+            if seed != T.SEED:
+                labels.append(label_frame(seed, grouped_datasets(panel, base, pos, tickers, sec_all, sec_map, seed)[0]))
+        dump_labels(Path(dump), labels)
+        return
+
+    # ---- v4: frozen fingerprint embeddings (files missing -> v1-v3 run unchanged)
+    fp_d = fp_dir()
+    fp_frames, fp_cols = load_fp(fp_d)
+    if fp_frames:
+        datasets = merge_fp(datasets, fp_frames)
+        for t in T.TARGETS:
+            EXTRA_SETS.setdefault(t, []).extend(fp_sets(fp_cols))
+
     # ---- models
     metrics, imps, hps, rob = [], [], {}, []
     for t in T.TARGETS:
@@ -177,16 +287,31 @@ def main() -> None:
               ", ".join(f"{r.model}={r.value:.3f}" for r in te.itertuples()))
 
     # ---- robustness of the grouped targets over ticker-split seeds (seed 42 = the main run above)
+    seed_ds = {T.SEED: datasets}
     for seed in ROB_SEEDS:
         if seed == T.SEED:
             continue
         t0 = time.time()
         ds, cols2, cols3 = grouped_datasets(panel, base, pos, tickers, sec_all, sec_map, seed)
+        if dump:
+            labels.append(label_frame(seed, ds))
+        ds = merge_fp(ds, fp_frames)
+        seed_ds[seed] = ds
         for t in T.GROUP_TARGETS:
+            extra = ([("fe3", cols3)] if t == "sector" else []) + (fp_sets(fp_cols) if fp_frames else [])
             rows, _, _, _ = run_target(t, ds[t], t, F.RAW_FEATURES, F.FE_FEATURES, t == "sector", fe2_cols=cols2,
-                                    extra_sets=[("fe3", cols3)] if t == "sector" else None)
+                                    extra_sets=extra or None)
             rob += robustness_rows(seed, rows, ds)
         print(f"[robustness] seed {seed} done in {time.time() - t0:.0f}s")
+    if dump:
+        dump_labels(Path(dump), labels)
+
+    # ---- v4: end-to-end fine-tuned encoders (fpnet, fpnet_a): predictions scored like every other model
+    for seed, ds in seed_ds.items():
+        rows = ft_rows(fp_d, seed, ds)
+        if seed == T.SEED:
+            metrics += rows
+        rob += robustness_rows(seed, [r for r in rows if r["target"] in ROB_METRICS], ds)
     rob_df = pd.DataFrame(rob)
     rob_df["_s"] = rob_df["seed"].map({s_: i for i, s_ in enumerate(ROB_SEEDS)})
     rob_df = rob_df.sort_values(["target", "_s"], kind="stable").drop(columns="_s")
@@ -227,6 +352,13 @@ def main() -> None:
         "robustness_seeds": ROB_SEEDS,
         "runtime_seconds": round(time.time() - t_start, 1),
     }
+    fp_info = {arm: json.loads(p.read_text()) for arm in ("ssl", "ssl_aux")
+               if (p := fp_d / f"fp_embeddings_{arm}.json").exists()}
+    logs = {name: {str(s): json.loads(p.read_text()) for s in ROB_SEEDS
+                   if (p := fp_d / f"{name}_log_seed{s}.json").exists()} for name in FT_MODELS}
+    logs = {k: v for k, v in logs.items() if v}
+    if fp_info or logs:
+        info["fingerprint"] = {**fp_info, "fpnet_logs": logs}
     (RESULTS / "run_info.json").write_text(json.dumps(info, indent=2, default=str))
     print("[done] results written to", RESULTS)
 
