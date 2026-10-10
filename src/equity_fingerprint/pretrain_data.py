@@ -1,13 +1,15 @@
 """Download and cache the non-Swiss v4 pretraining universe (Europe + US stocks).
 
 CLI: python -m equity_fingerprint.pretrain_data [--refresh] [--limit N] [--pretrain-dir DIR]
-         [--sources a,b,...] [--universe-only] [--no-info]
+         [--sources a,b,...] [--max-per-source SOURCE=N] [--universe-only] [--no-info]
 Writes <pretrain-dir>/{universe.csv, manifest.json, raw/prices.parquet, raw/index.parquet,
 raw/info.parquet}; EF_PRETRAIN_DIR overrides the default <repo>/data/pretrain. Constituent lists
-come from Wikipedia. Every step is cached on disk: price batches are stored as parquet parts under
+come from Wikipedia plus the Nasdaq Trader symbol directory (source nasdaqtrader: US common
+stocks). Every step is cached on disk: price batches are stored as parquet parts under
 raw/parts/ and info snapshots as one json per ticker, so a crash or rate limit resumes without
 re-downloading finished work. --limit N caps the universe at about N tickers (spread evenly over
-the chosen sources); the 2021-12-31 cutoff is applied by the pretraining loader, not here.
+the chosen sources without a --max-per-source); a rerun with more sources downloads only
+the tickers not cached yet. The 2021-12-31 cutoff is applied by the pretraining loader, not here.
 """
 from __future__ import annotations
 
@@ -93,7 +95,19 @@ SOURCES = {
     "ftse_smallcap": _src("FTSE_SmallCap_Index", TK, "GB", "^FTSE", ".L", min_rows=50),
     "oslo": _src("List_of_companies_listed_on_the_Oslo_Stock_Exchange", TK, "NO", "OBX.OL",
                  ".OL", min_rows=100),
+    # all US common stocks from the free Nasdaq Trader symbol directory (no Wikipedia page)
+    "nasdaqtrader": _src("", {}, "US", "^GSPC", kind="nasdaqtrader", min_rows=1000),
 }
+NASDAQTRADER = {  # file -> (symbol column, test-issue column, ETF column)
+    "nasdaqlisted": ("Symbol", "Test Issue", "ETF"),
+    "otherlisted": ("ACT Symbol", "Test Issue", "ETF"),
+}
+NASDAQTRADER_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/{name}.txt"
+DEFAULT_MAX_PER_SOURCE = {"nasdaqtrader": 2600}   # applied unless --limit is given
+# security names that are not plain common stock
+NOT_COMMON = re.compile(r"\b(?:warrants?|rights?|units?|preferred|preference|depositary|notes?|"
+                        r"acquisition (?:corp|co)\w*|debentures?|subordinated|etn|"
+                        r"trust certificates?|fund|beneficial interest)\b", re.I)
 
 
 # --------------------------------------------------------------------------- paths
@@ -221,10 +235,35 @@ def _is_swiss(name, hq=None, isin=None, country=None) -> bool:
                 or (country is not None and str(country) == "Switzerland"))
 
 
+def _nasdaqtrader(raw: Path, refresh: bool) -> pd.DataFrame:
+    """Common stocks from nasdaqlisted.txt + otherlisted.txt (pipe separated, footer dropped)."""
+    html_dir = raw / "html"
+    html_dir.mkdir(parents=True, exist_ok=True)
+    frames = []
+    for name, (sym, test, etf) in NASDAQTRADER.items():
+        txt = _fetch_html(NASDAQTRADER_URL.format(name=name), html_dir / f"{name}.txt", refresh)
+        t = pd.read_csv(io.StringIO(txt), sep="|", dtype=str, keep_default_na=False)
+        t = t[~t[sym].str.startswith("File Creation Time")]
+        t = t[(t[etf] == "N") & (t[test] == "N") & ~t["Security Name"].str.contains(NOT_COMMON)]
+        t = t[~t[sym].str.contains(r"\$", regex=True)]
+        frames.append(pd.DataFrame({"ticker": t[sym].str.strip().str.replace(".", "-", regex=False),
+                                    "name": t["Security Name"]}))
+    return pd.concat(frames, ignore_index=True)
+
+
 def _load_source(key: str, raw: Path, refresh: bool, cap: int | None) -> pd.DataFrame:
     spec = SOURCES[key]
     html_dir = raw / "html"
     html_dir.mkdir(parents=True, exist_ok=True)
+    if spec["kind"] == "nasdaqtrader":
+        df = _nasdaqtrader(raw, refresh)
+        df["name"] = df["name"].map(_clean)
+        n_swiss = int(sum(_is_swiss(n) for n in df["name"]))
+        df = df[[not _is_swiss(n) for n in df["name"]]]
+        df = df[~df["ticker"].str.endswith(".SW")].drop_duplicates("ticker")
+        df = df.assign(source=key, country=spec["country"], market_index=spec["index"])
+        df.attrs["n_swiss_dropped"] = n_swiss
+        return df[["ticker", "name", "source", "country", "market_index"]].reset_index(drop=True)
     html = _fetch_html(WIKI.format(lang=spec["lang"], page=spec["page"]),
                        html_dir / f"{key}.html", refresh)
     kind = spec["kind"]
@@ -263,9 +302,17 @@ def _load_source(key: str, raw: Path, refresh: bool, cap: int | None) -> pd.Data
 
 
 # --------------------------------------------------------------------------- universe
-def build_universe(root: Path, raw: Path, refresh: bool, keys: list[str], limit: int | None):
+def _sample_new(df: pd.DataFrame, seen: set, n: int) -> pd.DataFrame:
+    """Seeded random sample (seed 0) of n tickers that are not in an earlier source."""
+    df = df[~df["ticker"].isin(seen)].sort_values("ticker")
+    return df if len(df) <= n else df.sample(n=n, random_state=0).sort_values("ticker")
+
+
+def build_universe(root: Path, raw: Path, refresh: bool, keys: list[str], limit: int | None,
+                   max_per_source: dict | None = None):
     uni_path, meta_path = root / "universe.csv", raw / "universe_meta.json"
-    want = {"sources": keys, "limit": limit}
+    max_per_source = {k: n for k, n in (max_per_source or {}).items() if k in keys}
+    want = {"sources": keys, "limit": limit, "max_per_source": max_per_source}
     if not refresh and uni_path.exists() and meta_path.exists():
         meta = json.loads(meta_path.read_text())
         if {k: meta.get(k) for k in want} == want:
@@ -273,15 +320,25 @@ def build_universe(root: Path, raw: Path, refresh: bool, keys: list[str], limit:
             return pd.read_csv(uni_path), meta
     if refresh:
         (raw / "resolve_cache.json").unlink(missing_ok=True)
-    cap = math.ceil(limit / len(keys)) if limit else None
-    frames, status = [], {}
+    uncapped = [k for k in keys if k not in max_per_source]  # --limit is shared by these only
+    cap = math.ceil(limit / len(uncapped)) if limit and uncapped else None
+    frames, status, sampled = [], {}, {}
     for key in keys:
         url = WIKI.format(lang=SOURCES[key]["lang"], page=SOURCES[key]["page"])
+        if key == "nasdaqtrader":
+            url = ", ".join(NASDAQTRADER_URL.format(name=n) for n in NASDAQTRADER)
         try:
-            df = _load_source(key, raw, refresh, cap)
+            df = _load_source(key, raw, refresh, None if key in max_per_source else cap)
+            n_swiss = int(df.attrs.get("n_swiss_dropped", 0))
+            if key in max_per_source:
+                seen = set(pd.concat(frames)["ticker"]) if frames else set()
+                n_avail = int((~df["ticker"].isin(seen)).sum())
+                df = _sample_new(df, seen, max_per_source[key])
+                sampled[key] = {"max": max_per_source[key], "n_new_available": n_avail,
+                                "n_kept": int(len(df)), "seed": 0}
             frames.append(df)
             status[key] = {"url": url, "status": "ok", "n_listed": int(len(df)),
-                           "n_swiss_dropped": int(df.attrs.get("n_swiss_dropped", 0))}
+                           "n_swiss_dropped": n_swiss}
             print(f"[universe] {key}: {len(df)} tickers")
         except Exception as e:  # noqa: BLE001
             status[key] = {"url": url, "status": "failed", "error": repr(e)[:300]}
@@ -291,7 +348,8 @@ def build_universe(root: Path, raw: Path, refresh: bool, keys: list[str], limit:
     uni = pd.concat(frames, ignore_index=True)
     uni = uni.drop_duplicates("ticker", keep="first").reset_index(drop=True)
     uni.to_csv(uni_path, index=False)
-    meta = {**want, "source_status": status, "dropped_swiss_by_info": []}
+    meta = {**want, "source_status": status, "sampled_sources": sampled,
+            "dropped_swiss_by_info": []}
     meta_path.write_text(json.dumps(meta, indent=2))
     print(f"[universe] {len(uni)} unique tickers from {len(frames)}/{len(keys)} sources")
     return uni, meta
@@ -326,24 +384,27 @@ def _fetch_parts(tickers: list[str], prefix: str, parts: Path, refresh: bool,
                  batch_size: int = BATCH) -> tuple[list[str], int]:
     """Download in batches into parts/<prefix>_*.parquet; returns (no-data tickers, pending)."""
     parts.mkdir(parents=True, exist_ok=True)
-    tickers = sorted(set(tickers))
     nodata_path = parts / f"{prefix}_nodata.json"
-    nodata = set() if refresh or not nodata_path.exists() else set(json.loads(nodata_path.read_text()))
-    batches = [tickers[i:i + batch_size] for i in range(0, len(tickers), batch_size)]
+    if refresh:  # start over: stale parts would otherwise shadow the new download
+        for p in parts.glob(f"{prefix}_*"):
+            p.unlink()
+    nodata = set() if not nodata_path.exists() else set(json.loads(nodata_path.read_text()))
+    have = set()
+    for p in parts.glob(f"{prefix}_*.parquet"):
+        have |= set(pd.read_parquet(p, columns=["ticker"])["ticker"])
+    # incremental: only tickers that no earlier run has downloaded (or found empty) are fetched
+    todo = sorted(set(tickers) - have - nodata)
+    print(f"[{prefix}] fetching {len(todo)} tickers ({len(set(tickers)) - len(todo)} cached)")
+    batches = [todo[i:i + batch_size] for i in range(0, len(todo), batch_size)]
     pending, attempted = 0, []
     for n, batch in enumerate(batches, 1):
-        part = _batch_part(parts, prefix, batch)
-        if part.exists() and not refresh:
-            attempted += batch
-            continue
         df = _download_batch(batch, prefix)
         if df is None:
             pending += 1
             continue
-        df.to_parquet(part, index=False)
+        df.to_parquet(_batch_part(parts, prefix, batch), index=False)
         attempted += batch
         print(f"[{prefix}] batch {n}/{len(batches)}: {df.ticker.nunique()}/{len(batch)} ok")
-    have = set()
     for p in parts.glob(f"{prefix}_*.parquet"):
         have |= set(pd.read_parquet(p, columns=["ticker"])["ticker"])
     missing = sorted(set(attempted) - have - nodata)
@@ -360,7 +421,7 @@ def _fetch_parts(tickers: list[str], prefix: str, parts: Path, refresh: bool,
     if not pending:
         nodata |= set(attempted) - have
         nodata_path.write_text(json.dumps(sorted(nodata)))
-    return sorted(nodata), pending
+    return sorted(nodata & set(tickers)), pending
 
 
 def _concat_parts(parts: Path, prefix: str, keep: set[str]) -> pd.DataFrame:
@@ -491,6 +552,7 @@ def write_manifest(uni, prices, index, info, root, meta, info_errors, nodata, us
         "failed_tickers": failed,
         "source_status": meta["source_status"],
         "sources": sources,
+        "sampled_sources": meta.get("sampled_sources", {}),
     }
     (root / "manifest.json").write_text(json.dumps(manifest, indent=2))
     print(f"[manifest] written; {len(failed)} tickers with issues, {len(nodata)} without prices")
@@ -502,6 +564,9 @@ def main(argv=None) -> None:
     ap.add_argument("--refresh", action="store_true", help="re-download even if cached")
     ap.add_argument("--limit", type=int, default=None,
                     help="cap the universe at about N tickers, spread evenly over the sources")
+    ap.add_argument("--max-per-source", action="append", default=[], metavar="SOURCE=N",
+                    help="keep a seeded random sample of N tickers of SOURCE that are not in an "
+                         "earlier source (repeatable; default nasdaqtrader=2600 without --limit)")
     ap.add_argument("--pretrain-dir", default=None)
     ap.add_argument("--sources", default=",".join(SOURCES), help="comma separated source keys")
     ap.add_argument("--universe-only", action="store_true", help="stop after universe.csv")
@@ -517,10 +582,16 @@ def main(argv=None) -> None:
     want = 8192 if hard == resource.RLIM_INFINITY else min(8192, hard)
     if soft < want:
         resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+    maxes = {} if a.limit else dict(DEFAULT_MAX_PER_SOURCE)
+    for item in a.max_per_source:
+        k, _, n = item.partition("=")
+        if k not in SOURCES or not n.isdigit():
+            ap.error(f"--max-per-source expects SOURCE=N with a known source, got {item!r}")
+        maxes[k] = int(n)
     root = _pretrain_dir(a.pretrain_dir)
     raw = root / "raw"
     raw.mkdir(parents=True, exist_ok=True)
-    uni, meta = build_universe(root, raw, a.refresh, keys, a.limit)
+    uni, meta = build_universe(root, raw, a.refresh, keys, a.limit, maxes)
     if a.universe_only:
         print(uni.groupby("source", sort=False).size().to_string())
         return
