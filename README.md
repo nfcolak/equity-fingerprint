@@ -52,7 +52,7 @@ Test split (time targets: observations from 2024-01-01 on; grouped targets: held
 
 What feature engineering changed (test metric, `fe` minus `raw`; R² for regression, macro-F1 for sector): linear: `vol_1m` +0.119, `beta_1y` +0.202, `log_mcap` -0.046, `liquidity_1m` +0.017, `sector` +0.209; lgbm: `vol_1m` +0.104, `beta_1y` +0.108, `log_mcap` -0.001, `liquidity_1m` +0.018, `sector` +0.171.
 
-Run 2026-10-10 (code at commit `fb99fce`): 207 tickers, 28016 month-end observations (2014-03-31 to 2026-09-30). Observations per target (train / val / test): `vol_1m` 16326 / 4326 / 6473; `beta_1y` 14272 / 2141 / 4240; `log_mcap` 18913 / 4587 / 4365; `liquidity_1m` 16385 / 4336 / 6493; `sector` 18762 / 4436 / 4214.
+Run 2026-10-11 (code at commit `2ce9885`): 207 tickers, 28016 month-end observations (2014-03-31 to 2026-09-30). Observations per target (train / val / test): `vol_1m` 16326 / 4326 / 6473; `beta_1y` 14272 / 2141 / 4240; `log_mcap` 18913 / 4587 / 4365; `liquidity_1m` 16385 / 4336 / 6493; `sector` 18762 / 4436 / 4214.
 
 Sector classes dropped (fewer than 5 tickers): Utilities (4).
 
@@ -103,7 +103,7 @@ Test change from `fe` to `fe2` at seed 42: `sector` macro-F1 linear +0.010, lgbm
 
 The v1 `log_mcap` gap (`linear_fe` minus `linear_raw`, test R²) is -0.046 at seed 42; across the 5 seeds the paired gap has mean +0.017 and sd 0.037 (range -0.046 to +0.052), so the mean gap is within one seed-to-seed sd. The seed-to-seed sd of `linear_raw` test R² itself is 0.036.
 
-Full pipeline run time (all five targets, v2 models and the 5-seed robustness reruns, CPU): 5.7 min. Ticker-level `n_obs` in `metrics.csv` counts tickers.
+Full pipeline run time (all five targets, v2 models and the 5-seed robustness reruns, CPU): 23.8 min. Ticker-level `n_obs` in `metrics.csv` counts tickers.
 
 SHAP summaries of `lgbm_fe2` on a test sample:
 
@@ -145,6 +145,61 @@ Added models next to v1/v2 (v1/v2 rows are unchanged). For `vol_1m`: `linear_har
 | lgbm_fe | 0.224 ± 0.031 | 5 |
 | lgbm_fe2 | 0.229 ± 0.022 | 5 |
 | lgbm_fe3 | 0.282 ± 0.015 | 5 |
+
+### v4: fingerprint encoder (self-supervised, pretrained outside Switzerland)
+
+A Transformer encoder reads the last 252 trading days of a stock (log return, high-low range, overnight gap, relative volume, market return, zero-volume flag) and is pretrained without Swiss data: masked patch modelling, contrastive views and a co-movement objective on non-Swiss stocks (Europe and US), dates up to 2021-12-31 only. Arm `ssl` is purely self-supervised; arm `ssl_aux` adds non-Swiss sector and size labels as auxiliary heads. `linear_/lgbm_fp` use the frozen `ssl` embedding (128 dims), `*_fpa` the frozen `ssl_aux` embedding, `lgbm_fefpa` the `fe` features plus the `ssl_aux` embedding; `fpnet` / `fpnet_a` fine-tune the whole encoder (from `ssl` / `ssl_aux`) on the Swiss train split of each target. Test split, ticker split seed 42. Source: `results/metrics.csv`.
+
+- Arm `ssl`: pretrained on 4314 non-Swiss tickers, data up to 2021-12-31, 30000 steps (checkpoint sha256 `a2563d957806`).
+- Arm `ssl_aux`: pretrained on 4314 non-Swiss tickers, data up to 2021-12-31, 30000 steps (checkpoint sha256 `77c6de6d0b19`).
+
+`vol_1m` (test, 6473 observations):
+
+| Metric | best v1-v3 by validation (linear_fe3) | linear_fp | lgbm_fp | linear_fpa | lgbm_fpa | lgbm_fefpa | fpnet | fpnet_a |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| R² | 0.617 | 0.593 | 0.593 | 0.605 | 0.600 | 0.624 | 0.611 | 0.605 |
+| MAE | 0.288 | 0.299 | 0.298 | 0.293 | 0.295 | 0.283 | 0.292 | 0.293 |
+| QLIKE | 0.351 | 0.390 | 0.378 | 0.373 | 0.363 | 0.340 | 0.334 | 0.341 |
+
+`beta_1y` (test, 4240 observations):
+
+| Metric | best v1-v3 by validation (linear_fe) | linear_fp | lgbm_fp | linear_fpa | lgbm_fpa | lgbm_fefpa | fpnet | fpnet_a |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| R² | 0.632 | 0.635 | 0.608 | 0.627 | 0.627 | 0.636 | 0.606 | 0.630 |
+| MAE | 0.206 | 0.208 | 0.217 | 0.209 | 0.209 | 0.206 | 0.213 | 0.210 |
+
+`log_mcap` (test, 4365 observations):
+
+| Metric | best v1-v3 by validation (lgbm_fe) | linear_fp | lgbm_fp | linear_fpa | lgbm_fpa | lgbm_fefpa | fpnet | fpnet_a |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| R² | 0.689 | 0.534 | 0.502 | 0.594 | 0.504 | 0.682 | 0.628 | 0.565 |
+| MAE | 0.767 | 0.947 | 0.912 | 0.906 | 0.925 | 0.759 | 0.857 | 0.898 |
+
+`liquidity_1m` (test, 6493 observations):
+
+| Metric | best v1-v3 by validation (lgbm_fe) | linear_fp | lgbm_fp | linear_fpa | lgbm_fpa | lgbm_fefpa | fpnet | fpnet_a |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| R² | 0.957 | 0.847 | 0.858 | 0.866 | 0.863 | 0.956 | 0.893 | 0.901 |
+| MAE | 0.349 | 0.848 | 0.825 | 0.788 | 0.802 | 0.357 | 0.684 | 0.656 |
+
+`sector` (test, 4214 observations):
+
+| Metric | best v1-v3 by validation (linear_fe3) | linear_fp | lgbm_fp | linear_fpa | lgbm_fpa | lgbm_fefpa | fpnet | fpnet_a |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| macro-F1 | 0.335 | 0.222 | 0.208 | 0.223 | 0.212 | 0.289 | 0.186 | 0.229 |
+| accuracy | 0.431 | 0.321 | 0.346 | 0.317 | 0.352 | 0.401 | 0.351 | 0.349 |
+| ticker macro-F1 | 0.399 | 0.221 | 0.265 | 0.254 | 0.258 | 0.356 | 0.212 | 0.240 |
+
+`sector` robustness: test macro-F1, mean ± sd over ticker-split seeds, and the mean paired change against `linear_fe3`. Source: `results/robustness.csv`.
+
+| Model | macro-F1 | Seeds | Δ vs linear_fe3 |
+|---|---:|---:|---:|
+| linear_fe3 | 0.353 ± 0.031 | 5 | n/a |
+| lgbm_fpa | 0.181 ± 0.027 | 5 | -0.173 |
+| lgbm_fefpa | 0.247 ± 0.045 | 5 | -0.106 |
+| fpnet_a | 0.206 ± 0.047 | 5 | -0.147 |
+
+On the test split, with the best model of each family chosen by validation (main metric: R² for regression, macro-F1 for `sector`), the best v4 model against the best v1-v3 model is: `vol_1m` lgbm_fefpa 0.624 vs linear_fe3 0.617 (+0.007, v4 better); `beta_1y` fpnet_a 0.630 vs linear_fe 0.632 (-0.002, v4 not better); `log_mcap` lgbm_fefpa 0.682 vs lgbm_fe 0.689 (-0.007, v4 not better); `liquidity_1m` lgbm_fefpa 0.956 vs lgbm_fe 0.957 (-0.001, v4 not better); `sector` lgbm_fefpa 0.289 vs linear_fe3 0.335 (-0.046, v4 not better). The best v4 model is better on 1 of 5 targets, so v4 does not beat the v1-v3 benchmark on every target. Over the 5 ticker-split seeds (1, 2, 3, 4, 42), the best v4 `sector` model by mean test macro-F1 is lgbm_fefpa (0.247 ± 0.045) and the best v1-v3 model is linear_fe3 (0.353 ± 0.031); the paired mean difference is -0.106 (v4 higher in 0 of 5 seeds), so the sector gain of v4 is not positive on average. Provenance: pretrained on 4314 non-Swiss tickers with data up to 2021-12-31, 30000 steps per arm, on Kaggle (2x Tesla T4 (pretraining on one), kernel `necatifurkancolak/ef-v4-fingerprint` version 2, code commit `2ce9885`, run 2026-10-10). Checksums of all Kaggle outputs are in `results/run_info.json`.
 
 All metrics (validation and test, MAE/RMSE/QLIKE, accuracy, log loss): [`results/metrics.csv`](results/metrics.csv); feature gain: [`results/feature_importance.csv`](results/feature_importance.csv).
 <!-- results:end -->

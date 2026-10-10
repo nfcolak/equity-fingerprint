@@ -359,6 +359,9 @@ def main() -> None:
     logs = {k: v for k, v in logs.items() if v}
     if fp_info or logs:
         info["fingerprint"] = {**fp_info, "fpnet_logs": logs}
+        for key, fname in (("outputs_sha256", "outputs_sha256.json"), ("provenance", "provenance.json")):
+            if (fp_d / fname).exists():
+                info["fingerprint"][key] = json.loads((fp_d / fname).read_text())
     (RESULTS / "run_info.json").write_text(json.dumps(info, indent=2, default=str))
     print("[done] results written to", RESULTS)
 

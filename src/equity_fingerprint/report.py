@@ -235,7 +235,63 @@ def build_v4(results: Path) -> list[str]:
             L += ["`sector` robustness: test macro-F1, mean ± sd over ticker-split seeds, and the mean paired change "
                   "against `linear_fe3`. Source: `results/robustness.csv`.", "",
                   "| Model | macro-F1 | Seeds | Δ vs linear_fe3 |", "|---|---:|---:|---:|"] + rows + [""]
+    L += _v4_summary(m, rb if rb_path.exists() else None, fp)
     return L
+
+
+def _best_new(m: pd.DataFrame, t: str):
+    """Best v4 model of target ``t`` by validation main metric."""
+    v = m[(m.target == t) & (m.split == "val") & (m.metric == MAIN[t]) & m.model.isin(V4_MODELS)]
+    return v.loc[v["value"].idxmax(), "model"] if len(v) else None
+
+
+def _v4_summary(m: pd.DataFrame, rb, fp: dict) -> list[str]:
+    """Plain factual sentences (all numbers computed from the CSVs / run_info): v4 against v1-v3, sector seeds, provenance."""
+    parts, wins, n_cmp = [], 0, 0
+    for t in TARGETS:
+        old, new = _best_old(m, t), _best_new(m, t)
+        if not (old and new):
+            continue
+        vo, vn = _val(m, t, old, MAIN[t]), _val(m, t, new, MAIN[t])
+        d = vn - vo
+        n_cmp += 1
+        wins += d > 0
+        parts.append(f"`{t}` {new} {_f(vn)} vs {old} {_f(vo)} ({d:+.3f}, "
+                     + ("v4 better" if d > 0 else "v4 not better") + ")")
+    L = []
+    if parts:
+        L.append(f"On the test split, with the best model of each family chosen by validation "
+                 f"(main metric: R² for regression, macro-F1 for `sector`), the best v4 model against the best v1-v3 model is: "
+                 + "; ".join(parts) + f". The best v4 model is better on {wins} of {n_cmp} targets"
+                 + (", so v4 does not beat the v1-v3 benchmark on every target." if wins < n_cmp else "."))
+    if rb is not None:
+        rt = rb[(rb.split == "test") & (rb.target == "sector") & (rb.metric == "macro_f1")]
+        piv = rt.pivot_table(index="seed", columns="model", values="value")
+        new_c = [c for c in piv.columns if c in V4_MODELS and piv[c].notna().all()]
+        old_c = [c for c in piv.columns if c not in V4_MODELS and c != "baseline" and piv[c].notna().all()
+                 and not rt[(rt.model == c)].features.isin(V4_FEATURES).any()]
+        if new_c and old_c:
+            bn, bo = piv[new_c].mean().idxmax(), piv[old_c].mean().idxmax()
+            d = piv[bn] - piv[bo]
+            L.append(f"Over the {len(piv)} ticker-split seeds ({', '.join(map(str, piv.index))}), the best v4 `sector` model by "
+                     f"mean test macro-F1 is {bn} ({piv[bn].mean():.3f} ± {piv[bn].std(ddof=1):.3f}) and the best v1-v3 model "
+                     f"is {bo} ({piv[bo].mean():.3f} ± {piv[bo].std(ddof=1):.3f}); the paired mean difference is "
+                     f"{d.mean():+.3f} (v4 higher in {int((d > 0).sum())} of {len(d)} seeds), so the sector gain of v4 is "
+                     + ("positive" if d.mean() > 0 else "not positive") + " on average"
+                     + (" but within one seed-to-seed sd." if abs(d.mean()) <= max(piv[bn].std(ddof=1), piv[bo].std(ddof=1)) else "."))
+    pv = fp.get("provenance", {})
+    arms = [fp[a] for a in ("ssl", "ssl_aux") if a in fp]
+    if arms:
+        nt = sorted({a.get("n_tickers") for a in arms})
+        md = sorted({str(a.get("max_date"))[:10] for a in arms})
+        st = sorted({a.get("steps") for a in arms})
+        txt = (f"Provenance: pretrained on {'/'.join(map(str, nt))} non-Swiss tickers with data up to {'/'.join(md)}, "
+               f"{'/'.join(map(str, st))} steps per arm")
+        if pv:
+            txt += (f", on Kaggle ({pv.get('gpu', 'GPU n/a')}, kernel `{pv.get('kaggle_kernel', 'n/a')}` version "
+                    f"{pv.get('kernel_version', 'n/a')}, code commit `{pv.get('code_commit', 'n/a')}`, run {pv.get('run_date', 'n/a')})")
+        L.append(txt + ". Checksums of all Kaggle outputs are in `results/run_info.json`.")
+    return [" ".join(L), ""] if L else []
 
 
 def build_block(results: Path) -> str:
