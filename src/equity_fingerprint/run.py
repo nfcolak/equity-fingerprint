@@ -21,6 +21,7 @@ import shap  # noqa: E402
 from . import features as F  # noqa: E402
 from . import targets as T  # noqa: E402
 from .data import _data_dir  # noqa: E402
+from .embed import sector_profile_features  # noqa: E402
 from .models import run_target  # noqa: E402
 
 ROB_SEEDS = [42, 1, 2, 3, 4]
@@ -76,10 +77,14 @@ def grouped_datasets(panel, base, pos, tickers, sec_all, sec_map, seed: int):
     d["split"] = d["tsplit"]
     ds["log_mcap"] = d
     d = grp_df[grp_df["ticker"].isin(sec_map)].copy()
+    # v3: co-movement with this seed's train tickers (kNN profile + return embedding), sector dataset only
+    prof_df, prof_cols = sector_profile_features(panel, pos, train_tickers, sec_map)
+    d = d.merge(prof_df, on=keys, how="left")
     d["sector"] = d["ticker"].map(sec_map)
     d["split"] = d["tsplit"]
     ds["sector"] = d
-    return ds, F.FE_FEATURES + F.SIZE_FEATURES + sec_cols
+    fe2 = F.FE_FEATURES + F.SIZE_FEATURES + sec_cols
+    return ds, fe2, fe2 + prof_cols
 
 
 def robustness_rows(seed: int, rows: list[dict], ds: dict) -> list[dict]:
@@ -113,9 +118,11 @@ def main() -> None:
 
     # ---- return-structure (PCA) features: time targets use all tickers, grouped targets train tickers only
     keys = ["pos", "ticker"]
+    EXTRA_SETS: dict[str, list[tuple[str, list[str]]]] = {}
     L_time = F.pc_loadings(panel, F.pc_factors(panel, tickers), pos)
     time_df = base.merge(L_time, on=keys, how="left")
-    grp_ds, fe2_cols = grouped_datasets(panel, base, pos, tickers, sec_all, sec_map, T.SEED)
+    grp_ds, fe2_cols, fe3_cols = grouped_datasets(panel, base, pos, tickers, sec_all, sec_map, T.SEED)
+    EXTRA_SETS["sector"] = [("fe3", fe3_cols)]
 
     # ---- targets
     ft = T.forward_targets(panel, time_df)
@@ -144,7 +151,8 @@ def main() -> None:
         grouped = t in T.GROUP_TARGETS
         rows, fitted, info, classes = run_target(t, d, t, F.RAW_FEATURES, F.FE_FEATURES, clf,
                                                  with_qlike=(t == "vol_1m"),
-                                                 fe2_cols=fe2_cols if grouped else None)
+                                                 fe2_cols=fe2_cols if grouped else None,
+                                                 extra_sets=EXTRA_SETS.get(t))
         if grouped:
             rob += robustness_rows(T.SEED, rows, datasets)
         metrics += rows
@@ -168,9 +176,10 @@ def main() -> None:
         if seed == T.SEED:
             continue
         t0 = time.time()
-        ds, cols2 = grouped_datasets(panel, base, pos, tickers, sec_all, sec_map, seed)
+        ds, cols2, cols3 = grouped_datasets(panel, base, pos, tickers, sec_all, sec_map, seed)
         for t in T.GROUP_TARGETS:
-            rows, _, _, _ = run_target(t, ds[t], t, F.RAW_FEATURES, F.FE_FEATURES, t == "sector", fe2_cols=cols2)
+            rows, _, _, _ = run_target(t, ds[t], t, F.RAW_FEATURES, F.FE_FEATURES, t == "sector", fe2_cols=cols2,
+                                    extra_sets=[("fe3", cols3)] if t == "sector" else None)
             rob += robustness_rows(seed, rows, ds)
         print(f"[robustness] seed {seed} done in {time.time() - t0:.0f}s")
     rob_df = pd.DataFrame(rob)
