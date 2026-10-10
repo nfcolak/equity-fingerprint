@@ -1,6 +1,6 @@
 {
-  "run_date": "2026-10-09",
-  "git_sha": "88c343c5528d423b32d06905f87b582ff9b18e54",
+  "run_date": "2026-10-10",
+  "git_sha": "fb99fcee92e15019185b344a5e2d569d38856055",
   "n_tickers": 207,
   "n_chf_tickers_with_prices": 213,
   "n_observations_total": 28016,
@@ -163,6 +163,22 @@
         "num_leaves": 31,
         "min_child_samples": 20,
         "best_iteration": 99
+      },
+      "linear_har": {
+        "alpha": 0.01
+      },
+      "lgbm_har": {
+        "num_leaves": 8,
+        "min_child_samples": 20,
+        "best_iteration": 208
+      },
+      "linear_fe3": {
+        "alpha": 100
+      },
+      "lgbm_fe3": {
+        "num_leaves": 8,
+        "min_child_samples": 100,
+        "best_iteration": 168
       }
     },
     "beta_1y": {
@@ -251,6 +267,14 @@
         "num_leaves": 31,
         "min_child_samples": 400,
         "best_iteration": 25
+      },
+      "linear_fe3": {
+        "C": 0.01
+      },
+      "lgbm_fe3": {
+        "num_leaves": 31,
+        "min_child_samples": 400,
+        "best_iteration": 26
       }
     }
   },
@@ -261,5 +285,5 @@
     3,
     4
   ],
-  "runtime_seconds": 562.2
+  "runtime_seconds": 339.0
 }

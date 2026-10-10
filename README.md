@@ -52,7 +52,7 @@ Test split (time targets: observations from 2024-01-01 on; grouped targets: held
 
 What feature engineering changed (test metric, `fe` minus `raw`; R² for regression, macro-F1 for sector): linear: `vol_1m` +0.119, `beta_1y` +0.202, `log_mcap` -0.046, `liquidity_1m` +0.017, `sector` +0.209; lgbm: `vol_1m` +0.104, `beta_1y` +0.108, `log_mcap` -0.001, `liquidity_1m` +0.018, `sector` +0.171.
 
-Run 2026-10-09 (code at commit `88c343c`): 207 tickers, 28016 month-end observations (2014-03-31 to 2026-09-30). Observations per target (train / val / test): `vol_1m` 16326 / 4326 / 6473; `beta_1y` 14272 / 2141 / 4240; `log_mcap` 18913 / 4587 / 4365; `liquidity_1m` 16385 / 4336 / 6493; `sector` 18762 / 4436 / 4214.
+Run 2026-10-10 (code at commit `fb99fce`): 207 tickers, 28016 month-end observations (2014-03-31 to 2026-09-30). Observations per target (train / val / test): `vol_1m` 16326 / 4326 / 6473; `beta_1y` 14272 / 2141 / 4240; `log_mcap` 18913 / 4587 / 4365; `liquidity_1m` 16385 / 4336 / 6493; `sector` 18762 / 4436 / 4214.
 
 Sector classes dropped (fewer than 5 tickers): Utilities (4).
 
@@ -103,12 +103,48 @@ Test change from `fe` to `fe2` at seed 42: `sector` macro-F1 linear +0.010, lgbm
 
 The v1 `log_mcap` gap (`linear_fe` minus `linear_raw`, test R²) is -0.046 at seed 42; across the 5 seeds the paired gap has mean +0.017 and sd 0.037 (range -0.046 to +0.052), so the mean gap is within one seed-to-seed sd. The seed-to-seed sd of `linear_raw` test R² itself is 0.036.
 
-Full pipeline run time (all five targets, v2 models and the 5-seed robustness reruns, CPU): 9.4 min. Ticker-level `n_obs` in `metrics.csv` counts tickers.
+Full pipeline run time (all five targets, v2 models and the 5-seed robustness reruns, CPU): 5.7 min. Ticker-level `n_obs` in `metrics.csv` counts tickers.
 
 SHAP summaries of `lgbm_fe2` on a test sample:
 
 - [`sector`](results/shap_sector_fe2.png)
 - [`log_mcap`](results/shap_log_mcap_fe2.png)
+
+### v3: co-movement profile for sector, HAR/GARCH for volatility
+
+Added models next to v1/v2 (v1/v2 rows are unchanged). For `vol_1m`: `linear_har` / `lgbm_har` use only the three HAR inputs (log realised vol over the last 1, 5 and 22 trading days); `linear_fe3` / `lgbm_fe3` add the HAR inputs, a GJR-GARCH(1,1) 21-day mean volatility forecast and its persistence (Gaussian MLE per ticker on returns up to 2021-12-31, pooled parameters for tickers with fewer than 500 such returns) and SPI volatility state (log realised vol over 21 and 252 days and their difference) to the `fe` set. Test split. Source: `results/metrics.csv`.
+
+`vol_1m` (R² on log vol; QLIKE on variance, lower is better):
+
+| Model | R² | QLIKE |
+|---|---:|---:|
+| baseline | -0.047 | 1.055 |
+| linear_fe | 0.609 | 0.368 |
+| lgbm_fe | 0.624 | 0.346 |
+| linear_har | 0.495 | 0.733 |
+| lgbm_har | 0.494 | 0.549 |
+| linear_fe3 | 0.617 | 0.351 |
+| lgbm_fe3 | 0.610 | 0.355 |
+
+`sector` (ticker split seed 42; `ticker_macro_f1` averages class probabilities per ticker):
+
+| Model | macro-F1 | ticker macro-F1 |
+|---|---:|---:|
+| linear_fe | 0.313 | 0.414 |
+| linear_fe2 | 0.323 | 0.414 |
+| linear_fe3 | 0.335 | 0.399 |
+| lgbm_fe3 | 0.273 | 0.288 |
+
+`sector` robustness: test macro-F1, mean ± sd over ticker-split seeds. Source: `results/robustness.csv`.
+
+| Model | macro-F1 | Seeds |
+|---|---:|---:|
+| linear_fe | 0.290 ± 0.025 | 5 |
+| linear_fe2 | 0.318 ± 0.030 | 5 |
+| linear_fe3 | 0.353 ± 0.031 | 5 |
+| lgbm_fe | 0.224 ± 0.031 | 5 |
+| lgbm_fe2 | 0.229 ± 0.022 | 5 |
+| lgbm_fe3 | 0.282 ± 0.015 | 5 |
 
 All metrics (validation and test, MAE/RMSE/QLIKE, accuracy, log loss): [`results/metrics.csv`](results/metrics.csv); feature gain: [`results/feature_importance.csv`](results/feature_importance.csv).
 <!-- results:end -->
