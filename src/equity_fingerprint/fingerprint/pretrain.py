@@ -230,16 +230,19 @@ def losses(model, bt, g, n_days, k):
     w = (pmask.repeat_interleave(PATCH, 1) & (xb[..., N_DATA] > 0)).float()
     out = {"mpm": (((pred - xb[..., :N_DATA]) ** 2).mean(-1) * w).sum() / w.sum().clamp(min=1)}
 
+    # Autocast would downcast the matmuls below to float16 (-1e9 fill overflows, exp/CE lose range): keep them float32.
     za, zb = F.normalize(model.proj(emb_a).float(), dim=-1), F.normalize(model.proj(emb_b).float(), dim=-1)
-    logits = za @ zb.T / TEMP
-    same = bt["tid"][:, None] == bt["tid"][None, :]
-    logits = logits.masked_fill(same & ~torch.eye(len(same), dtype=torch.bool, device=same.device), -1e9)
-    tgt = torch.arange(len(logits), device=logits.device)
-    out["nce"] = (F.cross_entropy(logits, tgt) + F.cross_entropy(logits.T, tgt)) / 2
+    zc = F.normalize(model.comove(emb_a).float(), dim=-1)
+    with torch.autocast(xb.device.type, enabled=False):
+        logits = (za @ zb.T / TEMP).float()
+        same = bt["tid"][:, None] == bt["tid"][None, :]
+        logits = logits.masked_fill(same & ~torch.eye(len(same), dtype=torch.bool, device=same.device), -1e9)
+        tgt = torch.arange(len(logits), device=logits.device)
+        out["nce"] = (F.cross_entropy(logits, tgt) + F.cross_entropy(logits.T, tgt)) / 2
 
-    c = F.normalize(model.comove(emb_a).float(), dim=-1).reshape(n_days, k, -1)
-    cos = c @ c.transpose(1, 2)
-    out["comove"] = ((cos - bt["corr"]) ** 2)[bt["good"]].mean() if bt["good"].any() else cos.sum() * 0
+        c = zc.reshape(n_days, k, -1)
+        cos = c @ c.transpose(1, 2)
+        out["comove"] = ((cos - bt["corr"].float()) ** 2)[bt["good"]].mean() if bt["good"].any() else cos.sum() * 0
 
     if model.aux:
         sec = bt["sector"]

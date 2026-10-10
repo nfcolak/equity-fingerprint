@@ -83,6 +83,12 @@ class Net(nn.Module):
         return {t: (h(emb) if t == "sector" else h(emb)[:, 0]) for t, h in self.heads.items()}
 
 
+def to_dev(a: np.ndarray, device) -> torch.Tensor:
+    """numpy -> device tensor: floats as float32 (MPS has no float64), integer class codes as int64."""
+    a = np.asarray(a)
+    return torch.from_numpy(a.astype(np.int64 if a.dtype.kind in "iu" else np.float32, copy=False)).to(device)
+
+
 def make_x(ch, scaler, task, idx, device):
     return torch.from_numpy(window_batch(ch, task["pos"][idx], task["col"][idx], scaler)).to(device)
 
@@ -121,7 +127,7 @@ def finetune_seed(args, lab, ch, tickers, device, seed: int) -> tuple[pd.DataFra
                              {"params": net.heads.parameters(), "lr": HEAD_LR}], weight_decay=WEIGHT_DECAY)
     amp = device.type == "cuda"
     gscaler = torch.amp.GradScaler("cuda", enabled=amp)
-    y_t = {t: torch.from_numpy(task["y"][t]).to(device) for t in targets}
+    y_t = {t: to_dev(task["y"][t], device) for t in targets}
     code_t = torch.from_numpy(code.astype(np.int64)).to(device)
 
     train_idx = np.flatnonzero((code == CODE["train"]).any(0))
@@ -151,7 +157,7 @@ def finetune_seed(args, lab, ch, tickers, device, seed: int) -> tuple[pd.DataFra
         msg = []
         for k, t in enumerate(targets):
             m = code[k, eval_idx] == CODE["val"]
-            vl = float(target_loss(t, torch.from_numpy(out[t][m]), torch.from_numpy(task["y"][t][eval_idx][m])))
+            vl = float(target_loss(t, to_dev(out[t][m], "cpu"), to_dev(task["y"][t][eval_idx][m], "cpu")))
             msg.append(f"{t} {vl:.4f}")
             if vl < best[t]["val_loss"]:
                 best[t] = {"val_loss": vl, "epoch": epoch, "out": out[t]}
