@@ -114,6 +114,55 @@ def build_v2(results: Path) -> list[str]:
     return L
 
 
+def build_v3(results: Path) -> list[str]:
+    """v3 subsection: HAR / GJR-GARCH volatility models and the sector co-movement-profile models.
+
+    Rows of models that are not in the CSVs yet are skipped.
+    """
+    m = pd.read_csv(results / "metrics.csv")
+    L = ["### v3: co-movement profile for sector, HAR/GARCH for volatility", "",
+         "Added models next to v1/v2 (v1/v2 rows are unchanged). For `vol_1m`: `linear_har` / `lgbm_har` use only the "
+         "three HAR inputs (log realised vol over the last 1, 5 and 22 trading days); `linear_fe3` / `lgbm_fe3` add "
+         "the HAR inputs, a GJR-GARCH(1,1) 21-day mean volatility forecast and its persistence (Gaussian MLE per "
+         "ticker on returns up to 2021-12-31, pooled parameters for tickers with fewer than 500 such returns) and "
+         "SPI volatility state (log realised vol over 21 and 252 days and their difference) to the `fe` set. "
+         "Test split. Source: `results/metrics.csv`.", ""]
+
+    mods = ["baseline", "linear_fe", "lgbm_fe", "linear_har", "lgbm_har", "linear_fe3", "lgbm_fe3"]
+    rows = []
+    for mod in mods:
+        r2, ql = _val(m, "vol_1m", mod, "r2"), _val(m, "vol_1m", mod, "qlike")
+        if r2 is not None or ql is not None:
+            rows.append(f"| {mod} | {_f(r2)} | {_f(ql)} |")
+    if rows:
+        L += ["`vol_1m` (R² on log vol; QLIKE on variance, lower is better):", "",
+              "| Model | R² | QLIKE |", "|---|---:|---:|"] + rows + [""]
+
+    rows = []
+    for mod in ["linear_fe", "linear_fe2", "linear_fe3", "lgbm_fe3"]:
+        f1, tf1 = _val(m, "sector", mod, "macro_f1"), _val(m, "sector", mod, "ticker_macro_f1")
+        if f1 is not None or tf1 is not None:
+            rows.append(f"| {mod} | {_f(f1)} | {_f(tf1)} |")
+    if rows:
+        L += ["`sector` (ticker split seed 42; `ticker_macro_f1` averages class probabilities per ticker):", "",
+              "| Model | macro-F1 | ticker macro-F1 |", "|---|---:|---:|"] + rows + [""]
+
+    rb_path = results / "robustness.csv"
+    if rb_path.exists():
+        rb = pd.read_csv(rb_path)
+        rt = rb[(rb["split"] == "test") & (rb["target"] == "sector") & (rb["metric"] == "macro_f1")]
+        rows = []
+        for mod in ["linear_fe", "linear_fe2", "linear_fe3", "lgbm_fe", "lgbm_fe2", "lgbm_fe3"]:
+            v = rt[rt.model == mod]["value"]
+            if len(v) > 1:
+                rows.append(f"| {mod} | {v.mean():.3f} ± {v.std(ddof=1):.3f} | {len(v)} |")
+        if rows:
+            L += ["`sector` robustness: test macro-F1, mean ± sd over ticker-split seeds. "
+                  "Source: `results/robustness.csv`.", "",
+                  "| Model | macro-F1 | Seeds |", "|---|---:|---:|"] + rows + [""]
+    return L
+
+
 def build_block(results: Path) -> str:
     m = pd.read_csv(results / "metrics.csv")
     test = m[m["split"] == "test"]
@@ -167,6 +216,7 @@ def build_block(results: Path) -> str:
     lines += ["SHAP summaries of `lgbm_fe` on a test sample:", ""]
     lines += [f"- [`{t}`](results/shap_{t}.png)" for t in TARGETS]
     lines += [""] + build_v2(results)
+    lines += build_v3(results)
     lines += ["All metrics (validation and test, MAE/RMSE/QLIKE, accuracy, log loss): "
               "[`results/metrics.csv`](results/metrics.csv); feature gain: "
               "[`results/feature_importance.csv`](results/feature_importance.csv)."]

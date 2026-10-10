@@ -113,6 +113,7 @@ def main() -> None:
 
     # ---- return-structure (PCA) features: time targets use all tickers, grouped targets train tickers only
     keys = ["pos", "ticker"]
+    EXTRA_SETS: dict[str, list[tuple[str, list[str]]]] = {}
     L_time = F.pc_loadings(panel, F.pc_factors(panel, tickers), pos)
     time_df = base.merge(L_time, on=keys, how="left")
     grp_ds, fe2_cols = grouped_datasets(panel, base, pos, tickers, sec_all, sec_map, T.SEED)
@@ -135,6 +136,11 @@ def main() -> None:
         datasets[t] = d
     datasets.update(grp_ds)
 
+    # ---- v3 vol_1m: HAR / GJR-GARCH / market-vol features (past returns only; GARCH parameters fit on <= 2021-12-31)
+    from .volmodels import GARCH_COLS, HAR_COLS, MKT_COLS, vol_features
+    datasets["vol_1m"] = datasets["vol_1m"].merge(vol_features(panel, datasets["vol_1m"][keys]), on=keys, how="left")
+    EXTRA_SETS["vol_1m"] = [("har", HAR_COLS), ("fe3", F.FE_FEATURES + HAR_COLS + GARCH_COLS + MKT_COLS)]
+
     # ---- models
     metrics, imps, hps, rob = [], [], {}, []
     for t in T.TARGETS:
@@ -144,7 +150,8 @@ def main() -> None:
         grouped = t in T.GROUP_TARGETS
         rows, fitted, info, classes = run_target(t, d, t, F.RAW_FEATURES, F.FE_FEATURES, clf,
                                                  with_qlike=(t == "vol_1m"),
-                                                 fe2_cols=fe2_cols if grouped else None)
+                                                 fe2_cols=fe2_cols if grouped else None,
+                                                 extra_sets=EXTRA_SETS.get(t))
         if grouped:
             rob += robustness_rows(T.SEED, rows, datasets)
         metrics += rows
