@@ -133,7 +133,8 @@ def ticker_level_metrics(part: pd.DataFrame, y_col: str, proba, classes) -> dict
 
 
 def run_target(name: str, df: pd.DataFrame, y_col: str, raw_cols: list[str], fe_cols: list[str],
-               classification: bool, with_qlike: bool = False, fe2_cols: list[str] | None = None):
+               classification: bool, with_qlike: bool = False, fe2_cols: list[str] | None = None,
+               extra_sets: list[tuple[str, list[str]]] | None = None):
     """Fit all models on df[split=='train']; return (metric rows, fitted lgbm models + test frames, hp, classes)."""
     tr, va, te = (df[df["split"] == s] for s in ("train", "val", "test"))
     classes = np.array(sorted(tr[y_col].unique())) if classification else None
@@ -173,6 +174,7 @@ def run_target(name: str, df: pd.DataFrame, y_col: str, raw_cols: list[str], fe_
 
     fitted = {}
     sets = [("raw", raw_cols), ("fe", fe_cols)] + ([("fe2", fe2_cols)] if fe2_cols else [])
+    sets += list(extra_sets or [])
     for feats, cols in sets:
         # linear
         pl = Prep(cols, linear=True).fit(tr)
