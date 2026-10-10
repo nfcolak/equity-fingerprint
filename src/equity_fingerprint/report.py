@@ -163,6 +163,81 @@ def build_v3(results: Path) -> list[str]:
     return L
 
 
+V4_MODELS = ["linear_fp", "lgbm_fp", "linear_fpa", "lgbm_fpa", "lgbm_fefpa", "fpnet", "fpnet_a"]
+V4_FEATURES = ["fp", "fpa", "fefpa", "fp_e2e", "fpa_e2e"]
+V4_METRICS = {"vol_1m": [("r2", "R²"), ("mae", "MAE"), ("qlike", "QLIKE")],
+              "beta_1y": [("r2", "R²"), ("mae", "MAE")], "log_mcap": [("r2", "R²"), ("mae", "MAE")],
+              "liquidity_1m": [("r2", "R²"), ("mae", "MAE")],
+              "sector": [("macro_f1", "macro-F1"), ("accuracy", "accuracy"), ("ticker_macro_f1", "ticker macro-F1")]}
+
+
+def _best_old(m: pd.DataFrame, t: str):
+    """Best v1-v3 model of target ``t`` by validation main metric (v4 models and the baseline excluded)."""
+    v = m[(m.target == t) & (m.split == "val") & (m.metric == MAIN[t]) & (m.model != "baseline")
+          & ~m.features.isin(V4_FEATURES)]
+    return v.loc[v["value"].idxmax(), "model"] if len(v) else None
+
+
+def build_v4(results: Path) -> list[str]:
+    """v4 subsection: frozen / fine-tuned fingerprint encoder against the best v1-v3 model. Missing rows are skipped."""
+    m = pd.read_csv(results / "metrics.csv")
+    if not m.model.isin(V4_MODELS).any():
+        return []
+    L = ["### v4: fingerprint encoder (self-supervised, pretrained outside Switzerland)", "",
+         "A Transformer encoder reads the last 252 trading days of a stock (log return, high-low range, overnight gap, "
+         "relative volume, market return, zero-volume flag) and is pretrained without Swiss data: masked patch "
+         "modelling, contrastive views and a co-movement objective on non-Swiss stocks (Europe and US), dates up to "
+         "2021-12-31 only. Arm `ssl` is purely self-supervised; arm `ssl_aux` adds non-Swiss sector and size labels as "
+         "auxiliary heads. `linear_/lgbm_fp` use the frozen `ssl` embedding (128 dims), `*_fpa` the frozen `ssl_aux` "
+         "embedding, `lgbm_fefpa` the `fe` features plus the `ssl_aux` embedding; `fpnet` / `fpnet_a` fine-tune the "
+         "whole encoder (from `ssl` / `ssl_aux`) on the Swiss train split of each target. Test split, ticker split "
+         "seed 42. Source: `results/metrics.csv`.", ""]
+    info_path = results / "run_info.json"
+    fp = json.loads(info_path.read_text()).get("fingerprint", {}) if info_path.exists() else {}
+    for arm in ("ssl", "ssl_aux"):
+        if arm in fp:
+            a = fp[arm]
+            L.append(f"- Arm `{arm}`: pretrained on {a.get('n_tickers', 'n/a')} non-Swiss tickers, data up to "
+                     f"{a.get('max_date', 'n/a')}, {a.get('steps', 'n/a')} steps (checkpoint sha256 "
+                     f"`{str(a.get('ckpt_sha256', 'n/a'))[:12]}`).")
+    if fp:
+        L.append("")
+    test = m[m.split == "test"]
+    for t in TARGETS:
+        old = _best_old(m, t)
+        new = [x for x in V4_MODELS if len(test[(test.target == t) & (test.model == x)])]
+        if not new:
+            continue
+        mods = ([old] if old else []) + new
+        head = [f"best v1-v3 by validation ({old})" if old else "best v1-v3"] + new
+        n = test[(test.target == t) & (test.metric == V4_METRICS[t][0][0])]["n_obs"]
+        L += [f"`{t}` (test, {int(n.iloc[0]) if len(n) else 'n/a'} observations):", "",
+              "| Metric | " + " | ".join(head) + " |", "|---|" + "|".join(["---:"] * len(head)) + "|"]
+        for met, lab in V4_METRICS[t]:
+            vals = [_val(m, t, x, met) for x in mods]
+            if any(v is not None for v in vals):
+                L.append(f"| {lab} | " + " | ".join(_f(v) for v in vals) + " |")
+        L.append("")
+
+    rb_path = results / "robustness.csv"
+    if rb_path.exists():
+        rb = pd.read_csv(rb_path)
+        rt = rb[(rb.split == "test") & (rb.target == "sector") & (rb.metric == "macro_f1")]
+        ref = rt[rt.model == "linear_fe3"].set_index("seed")["value"]
+        rows = []
+        for mod in ["linear_fe3", "lgbm_fpa", "lgbm_fefpa", "fpnet_a"]:
+            sub = rt[rt.model == mod].set_index("seed")["value"]
+            if len(sub) > 1:
+                d = (sub - ref).dropna()
+                rows.append(f"| {mod} | {sub.mean():.3f} ± {sub.std(ddof=1):.3f} | {len(sub)} | "
+                            + (f"{d.mean():+.3f}" if mod != "linear_fe3" and len(d) else "n/a") + " |")
+        if rows:
+            L += ["`sector` robustness: test macro-F1, mean ± sd over ticker-split seeds, and the mean paired change "
+                  "against `linear_fe3`. Source: `results/robustness.csv`.", "",
+                  "| Model | macro-F1 | Seeds | Δ vs linear_fe3 |", "|---|---:|---:|---:|"] + rows + [""]
+    return L
+
+
 def build_block(results: Path) -> str:
     m = pd.read_csv(results / "metrics.csv")
     test = m[m["split"] == "test"]
@@ -217,6 +292,7 @@ def build_block(results: Path) -> str:
     lines += [f"- [`{t}`](results/shap_{t}.png)" for t in TARGETS]
     lines += [""] + build_v2(results)
     lines += build_v3(results)
+    lines += build_v4(results)
     lines += ["All metrics (validation and test, MAE/RMSE/QLIKE, accuracy, log loss): "
               "[`results/metrics.csv`](results/metrics.csv); feature gain: "
               "[`results/feature_importance.csv`](results/feature_importance.csv)."]
