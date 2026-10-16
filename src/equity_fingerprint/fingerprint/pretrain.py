@@ -2,12 +2,15 @@
 
 CLI: python -m equity_fingerprint.fingerprint.pretrain --pretrain-dir DIR --out DIR --arm {ssl,ssl_aux}
          --device {cpu,cuda,mps} --steps N --batch 512 --lr 3e-4 --seed 0 [--max-tickers N]
+         [--positives {near,far}]
 
-Writes ``ckpt_<arm>.pt`` (every 2,000 steps and at the end) and ``pretrain_log_<arm>.json`` to ``--out``.
+Writes ``ckpt_<arm>.pt`` (every 2,000 steps and at the end) and ``pretrain_log_<arm>.json`` to ``--out``
+(``ckpt_<arm>_far.pt`` / ``pretrain_log_<arm>_far.json`` with ``--positives far``).
 
 Losses (the "fingerprint" objective):
   mpm      masked patch modelling: 30% of the patches of view B are masked, scaled channels reconstructed
-  nce      InfoNCE (T=0.1) between two augmented views of the same (ticker, end day); view B is the masked one
+  nce      InfoNCE (T=0.1) between two augmented views of the same ticker; view B is the masked one.
+           near: same end day (views shifted back by 0..5 days); far: end days FAR_MIN..FAR_MAX days apart
   comove   cosine of projected embeddings of two tickers on the same end day -> their realized return correlation
   sector, mcap (arm ssl_aux only): auxiliary heads on the embedding with non-Swiss yfinance labels
 Batches are n_days x k tickers (same end day per group), so the co-movement term has pairs.
@@ -31,13 +34,14 @@ from torch import nn
 
 from ..data import PRICE_COLS
 from ..features import TRAIN_END
-from .model import FingerprintEncoder
+from .model import FingerprintEncoder, mlp
 from .windows import CHANNELS, PATCH, WINDOW, channels_from_wide, window_batch
 
 N_DATA = len(CHANNELS)
 MIN_ROWS = 500          # rows (<= cutoff) a ticker needs
 MIN_WINDOW_DAYS = 200   # valid days a (ticker, end day) window needs
 MAX_SHIFT = 5           # view augmentation: end day moved back by 0..5 trading days
+FAR_MIN, FAR_MAX = 252, 756  # --positives far: trading days between the end days of the two views
 MIN_CORR_DAYS = 100     # common valid days for a realized correlation
 MASK_FRAC, TEMP, P_DROP, JITTER = 0.3, 0.1, 0.1, (0.9, 1.1)
 JITTER_CH = [CHANNELS.index(c) for c in ("ret", "gap", "mkt_ret")]
@@ -147,14 +151,55 @@ def realized_corr(ret, d, k):
 class Sampler:
     """Batches of ``n_days`` end days x ``k`` tickers drawn from the tickers ``pool``."""
 
-    def __init__(self, data, pool, ok, batch, k=8):
-        self.d, self.pool, self.ok = data, np.asarray(pool), ok[:, pool]
+    def __init__(self, data, pool, ok, batch, k=8, positives="near"):
+        self.d, self.pool, self.ok, self.positives = data, np.asarray(pool), ok[:, pool], positives
         self.k = min(k, len(self.pool))
         self.days = np.flatnonzero(self.ok.sum(1) >= self.k)
+        if positives == "far":
+            # sorted valid days of every ticker as one key array (column * span + day + pad) for vectorised searchsorted
+            self.pad, self.span = FAR_MAX + 1, ok.shape[0] + 2 * FAR_MAX + 2
+            col, day = np.nonzero(self.ok.T)
+            self.vday, self.vkey = day, col * self.span + day + self.pad
+            # [T, P] once: valid on that day and has a far partner (per-batch searchsorted over all tickers is ~90 ms)
+            self.elig = np.zeros_like(self.ok)
+            for lo in range(0, ok.shape[0], 256):
+                rows = np.arange(lo, min(lo + 256, ok.shape[0]))
+                _, n1, _, n2 = self._spans(rows[:, None], np.arange(len(self.pool))[None])
+                self.elig[rows] = self.ok[rows] & (n1 + n2 > 0)
+            self.days = self.days[self._eligible(self.days, np.zeros(len(self.days), int)).sum(1) >= self.k]
         assert len(self.days), "no end day with enough tickers"
         self.n_days = max(1, batch // self.k)
 
+    def _spans(self, a, c):
+        """Positions in the key array of the valid days of ticker ``c`` in [a-FAR_MAX, a-FAR_MIN] and
+        [a+FAR_MIN, a+FAR_MAX] -> (lo_before, n_before, lo_after, n_after)."""
+        key = lambda x: np.searchsorted(self.vkey, c * self.span + x + self.pad, side="left")  # noqa: E731
+        lo1, hi1 = key(a - FAR_MAX), key(a - FAR_MIN + 1)
+        lo2, hi2 = key(a + FAR_MIN), key(a + FAR_MAX + 1)
+        return lo1, hi1 - lo1, lo2, hi2 - lo2
+
+    def _eligible(self, t, shift):
+        """[len(t), P] bool: ticker valid on day ``t - shift`` and has a valid day FAR_MIN..FAR_MAX away from it."""
+        return self.elig[t - shift]
+
+    def _draw_far(self, rng):
+        t = rng.choice(self.days, self.n_days, replace=len(self.days) < self.n_days)
+        a = t - rng.integers(0, MAX_SHIFT + 1, self.n_days)
+        elig = self._eligible(t, t - a)
+        short = elig.sum(1) < self.k  # shifted day leaves too few tickers: use the unshifted day (always enough)
+        a[short] = t[short]
+        elig[short] = self._eligible(t[short], np.zeros(int(short.sum()), int))
+        score = np.where(elig, rng.random(elig.shape), -1.0)  # k random eligible tickers per day group
+        local = np.argpartition(-score, self.k - 1, axis=1)[:, :self.k].reshape(-1)
+        a_r = np.repeat(a, self.k)
+        lo1, n1, lo2, n2 = self._spans(a_r, local)
+        r = np.minimum((rng.random(len(local)) * (n1 + n2)).astype(np.int64), n1 + n2 - 1)  # uniform over both sides
+        b = self.vday[np.where(r < n1, lo1 + r, lo2 + r - n1)]
+        return a_r, b, self.pool[local]
+
     def draw(self, rng):
+        if self.positives == "far":
+            return self._draw_far(rng)
         t = rng.choice(self.days, self.n_days, replace=len(self.days) < self.n_days)
         local = np.stack([rng.choice(np.flatnonzero(self.ok[d]), self.k, replace=False) for d in t])
         a = t - rng.integers(0, MAX_SHIFT + 1, self.n_days)
@@ -188,10 +233,6 @@ def make_labels(data, train, min_sector, seed=0):
 
 
 # --------------------------------------------------------------------------- model + losses
-def mlp(d_in, d_hid, d_out):
-    return nn.Sequential(nn.Linear(d_in, d_hid), nn.GELU(), nn.Linear(d_hid, d_out))
-
-
 class PretrainModel(nn.Module):
     def __init__(self, encoder, arm, n_classes):
         super().__init__()
@@ -276,7 +317,11 @@ def evaluate(model, val_batches, sampler, seed):
 def save_ckpt(path, model, args, scaler, data, step, final):
     ckpt = {"state_dict": {n: v.detach().cpu() for n, v in model.encoder.state_dict().items()},
             "config": dict(model.encoder.config), "scaler": scaler,
-            "pretrain": {"arm": args.arm, "n_tickers": len(data.tickers), "max_date": data.max_date,
+            "heads_state_dict": {n: v.detach().cpu() for n, v in model.state_dict().items()
+                                 if not n.startswith("encoder.")},
+            "heads_config": {"d_model": model.encoder.config["d_model"], "comove_out": 64,
+                             "n_sector_classes": model.sector.out_features if model.sector is not None else 0},
+            "pretrain": {"arm": args.arm, "positives": args.positives, "n_tickers": len(data.tickers), "max_date": data.max_date,
                          "steps": step, "seed": args.seed, "manifest_sha256": data.manifest_sha256,
                          "final_losses": final}}
     tmp = Path(str(path) + ".tmp")
@@ -301,6 +346,8 @@ def main(argv=None) -> None:
     ap.add_argument("--batch", type=int, default=512)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--positives", choices=["near", "far"], default="near",
+                    help="contrastive views: same end day (near) or same ticker 252-756 days apart (far)")
     ap.add_argument("--max-tickers", type=int, default=None)
     ap.add_argument("--min-sector-tickers", type=int, default=20, help="arm ssl_aux: smallest sector class")
     args = ap.parse_args(argv)
@@ -322,7 +369,8 @@ def main(argv=None) -> None:
     scaler = fit_scaler(data.ch, train, args.seed)
     ok = window_ok(data.ch)
     labels = make_labels(data, train, args.min_sector_tickers, args.seed)
-    tr_s, va_s = Sampler(data, train, ok, args.batch), Sampler(data, val, ok, args.batch)
+    tr_s = Sampler(data, train, ok, args.batch, positives=args.positives)
+    va_s = Sampler(data, val, ok, args.batch, positives=args.positives)
     print(f"data: {n} tickers ({len(train)} train / {len(val)} val), {data.ch.shape[0]} days, "
           f"to {data.max_date}, {int(ok[:, train].sum())} train windows, "
           f"{len(labels['classes'])} sector classes, loaded in {time.time() - t0:.0f}s", flush=True)
@@ -340,10 +388,15 @@ def main(argv=None) -> None:
     val_batches = [to_device(va_s.batch(rng_val, scaler, labels), device) for _ in range(VAL_BATCHES)]
     rng, g = np.random.default_rng(args.seed + 2), torch.Generator().manual_seed(args.seed + 3)
 
-    log = {"args": vars(args), "n_encoder_params": n_params, "n_train_tickers": int(len(train)),
+    rng_gap = np.random.default_rng(args.seed + 4)  # own stream: logging must not move the training draws
+    gaps = [float(np.abs(ta - tb).mean()) for ta, tb, _ in (tr_s.draw(rng_gap) for _ in range(20))]
+    print(f"positives {args.positives}: mean |ta - tb| {np.mean(gaps):.1f} days", flush=True)
+
+    log = {"args": vars(args), "positives": args.positives, "mean_abs_dt": float(np.mean(gaps)), "n_encoder_params": n_params, "n_train_tickers": int(len(train)),
            "n_val_tickers": int(len(val)), "weights": WEIGHTS, "records": []}
-    log_path, ckpt_path = out / f"pretrain_log_{args.arm}.json", out / f"ckpt_{args.arm}.pt"
-    log["records"].append({"step": 0, "val": evaluate(model, val_batches, va_s, args.seed)})
+    tag = args.arm + ("_far" if args.positives == "far" else "")
+    log_path, ckpt_path = out / f"pretrain_log_{tag}.json", out / f"ckpt_{tag}.pt"
+    log["records"].append({"step": 0, "positives": args.positives, "val": evaluate(model, val_batches, va_s, args.seed)})
     print(f"step 0 val {log['records'][0]['val']}", flush=True)
 
     acc, t_win, last = {}, time.time(), {}
@@ -365,7 +418,7 @@ def main(argv=None) -> None:
         if step % LOG_EVERY == 0 or step == args.steps:
             cnt = LOG_EVERY if step % LOG_EVERY == 0 else step % LOG_EVERY
             train_l = {nm: float(v) / cnt for nm, v in acc.items()}  # float() syncs the device
-            rec = {"step": step, "train": train_l, "val": evaluate(model, val_batches, va_s, args.seed),
+            rec = {"step": step, "positives": args.positives, "train": train_l, "val": evaluate(model, val_batches, va_s, args.seed),
                    "steps_per_s": cnt / (time.time() - t_win), "lr": opt.param_groups[0]["lr"]}
             log["records"].append(rec)
             log_path.write_text(json.dumps(log, indent=1))

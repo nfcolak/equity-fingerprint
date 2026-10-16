@@ -165,6 +165,11 @@ def build_v3(results: Path) -> list[str]:
 
 V4_MODELS = ["linear_fp", "lgbm_fp", "linear_fpa", "lgbm_fpa", "lgbm_fefpa", "fpnet", "fpnet_a"]
 V4_FEATURES = ["fp", "fpa", "fefpa", "fp_e2e", "fpa_e2e"]
+V5_MODELS = ["linear_fpf", "lgbm_fpf", "linear_fpfa", "lgbm_fpfa", "lgbm_fefpfa",
+             "linear_fpprof", "lgbm_fpprof", "linear_fe3fpprof", "lgbm_fe3fpprof"]
+V5_FEATURES = ["fpf", "fpfa", "fefpfa", "fpprof", "fe3fpprof"]
+V5_ARMS = ("ssl_far", "ssl_aux_far")
+V5_ROB_MODELS = ["linear_fe3fpprof", "lgbm_fe3fpprof"]
 V4_METRICS = {"vol_1m": [("r2", "R²"), ("mae", "MAE"), ("qlike", "QLIKE")],
               "beta_1y": [("r2", "R²"), ("mae", "MAE")], "log_mcap": [("r2", "R²"), ("mae", "MAE")],
               "liquidity_1m": [("r2", "R²"), ("mae", "MAE")],
@@ -174,7 +179,7 @@ V4_METRICS = {"vol_1m": [("r2", "R²"), ("mae", "MAE"), ("qlike", "QLIKE")],
 def _best_old(m: pd.DataFrame, t: str):
     """Best v1-v3 model of target ``t`` by validation main metric (v4 models and the baseline excluded)."""
     v = m[(m.target == t) & (m.split == "val") & (m.metric == MAIN[t]) & (m.model != "baseline")
-          & ~m.features.isin(V4_FEATURES)]
+          & ~m.features.isin(V4_FEATURES + V5_FEATURES) & ~m.model.isin(V5_MODELS)]
     return v.loc[v["value"].idxmax(), "model"] if len(v) else None
 
 
@@ -269,7 +274,8 @@ def _v4_summary(m: pd.DataFrame, rb, fp: dict) -> list[str]:
         piv = rt.pivot_table(index="seed", columns="model", values="value")
         new_c = [c for c in piv.columns if c in V4_MODELS and piv[c].notna().all()]
         old_c = [c for c in piv.columns if c not in V4_MODELS and c != "baseline" and piv[c].notna().all()
-                 and not rt[(rt.model == c)].features.isin(V4_FEATURES).any()]
+                 and c not in V5_MODELS
+                 and not rt[(rt.model == c)].features.isin(V4_FEATURES + V5_FEATURES).any()]
         if new_c and old_c:
             bn, bo = piv[new_c].mean().idxmax(), piv[old_c].mean().idxmax()
             d = piv[bn] - piv[bo]
@@ -292,6 +298,111 @@ def _v4_summary(m: pd.DataFrame, rb, fp: dict) -> list[str]:
                     f"{pv.get('kernel_version', 'n/a')}, code commit `{pv.get('code_commit', 'n/a')}`, run {pv.get('run_date', 'n/a')})")
         L.append(txt + ". Checksums of all Kaggle outputs are in `results/run_info.json`.")
     return [" ".join(L), ""] if L else []
+
+
+def _best_by_val(m: pd.DataFrame, t: str, models):
+    """Best model of ``models`` for target ``t`` by validation main metric."""
+    v = m[(m.target == t) & (m.split == "val") & (m.metric == MAIN[t]) & m.model.isin(models)]
+    return v.loc[v["value"].idxmax(), "model"] if len(v) else None
+
+
+def _best_v1_v4(m: pd.DataFrame, t: str):
+    """Best v1-v4 model of target ``t`` by validation main metric (v5 models and the baseline excluded)."""
+    v = m[(m.target == t) & (m.split == "val") & (m.metric == MAIN[t]) & (m.model != "baseline")
+          & ~m.model.isin(V5_MODELS) & ~m.features.isin(V5_FEATURES)]
+    return v.loc[v["value"].idxmax(), "model"] if len(v) else None
+
+
+def build_v5(results: Path) -> list[str]:
+    """v5 subsection: far-positive fingerprint arms and sector co-movement-profile models. [] when no v5 rows exist."""
+    m = pd.read_csv(results / "metrics.csv")
+    if not m.model.isin(V5_MODELS).any():
+        return []
+    L = ["### v5: far positives for the fingerprint encoder, same-date co-movement profile for sector", "",
+         "Same Swiss evaluation as v4; new rows only. `linear_/lgbm_fpf` use the frozen `ssl_far` embedding, "
+         "`*_fpfa` the frozen `ssl_aux_far` embedding and `lgbm_fefpfa` the `fe` features plus the `ssl_aux_far` "
+         "embedding (arms pretrained with far positives: the two contrastive views are the same stock 252-756 trading days apart, so they never overlap). For "
+         "`sector` only, `linear_/lgbm_fpprof` use same-date co-movement-profile features against the training "
+         "tickers and `linear_/lgbm_fe3fpprof` add them to the `fe3` set. Test split, ticker split seed 42. "
+         "Source: `results/metrics.csv`.", ""]
+    info_path = results / "run_info.json"
+    fp = json.loads(info_path.read_text()).get("fingerprint", {}) if info_path.exists() else {}
+    for arm in V5_ARMS:
+        if arm in fp:
+            a = fp[arm]
+            L.append(f"- Arm `{arm}`: pretrained on {a.get('n_tickers', 'n/a')} non-Swiss tickers, data up to "
+                     f"{a.get('max_date', 'n/a')}, {a.get('steps', 'n/a')} steps (checkpoint sha256 "
+                     f"`{str(a.get('ckpt_sha256', 'n/a'))[:12]}`).")
+    if any(a in fp for a in V5_ARMS):
+        L.append("")
+    test = m[m.split == "test"]
+    parts, rob_parts, wins, n_cmp = [], [], 0, 0
+    for t in TARGETS:
+        old, new = _best_v1_v4(m, t), _best_by_val(m, t, V5_MODELS)
+        present = [x for x in V5_MODELS if len(test[(test.target == t) & (test.model == x)])]
+        if not present:
+            continue
+        mods = ([old] if old else []) + present
+        head = [f"best v1-v4 by validation ({old})" if old else "best v1-v4"] + present
+        n = test[(test.target == t) & (test.metric == V4_METRICS[t][0][0])]["n_obs"]
+        L += [f"`{t}` (test, {int(n.iloc[0]) if len(n) else 'n/a'} observations):", "",
+              "| Metric | " + " | ".join(head) + " |", "|---|" + "|".join(["---:"] * len(head)) + "|"]
+        for met, lab in V4_METRICS[t]:
+            vals = [_val(m, t, x, met) for x in mods]
+            if any(v is not None for v in vals):
+                L.append(f"| {lab} | " + " | ".join(_f(v) for v in vals) + " |")
+        L.append("")
+        if old and new:
+            vo, vn = _val(m, t, old, MAIN[t]), _val(m, t, new, MAIN[t])
+            if vo is not None and vn is not None:
+                n_cmp += 1
+                wins += vn - vo > 0
+                parts.append(f"`{t}` {new} {_f(vn)} vs {old} {_f(vo)} ({vn - vo:+.3f}, "
+                             + ("v5 better" if vn - vo > 0 else "v5 not better") + ")")
+    rb_path = results / "robustness.csv"
+    rb = pd.read_csv(rb_path) if rb_path.exists() else None
+    if rb is not None:
+        rt = rb[(rb.split == "test") & (rb.target == "sector") & (rb.metric == "macro_f1")]
+        piv = rt.pivot_table(index="seed", columns="model", values="value")
+        v5_c = [c for c in V5_ROB_MODELS if c in piv.columns and piv[c].notna().sum() > 1]
+        v4_c = [c for c in V4_MODELS if c in piv.columns and piv[c].notna().all()]
+        if v5_c:
+            cols = (["linear_fe3"] if "linear_fe3" in piv.columns else [])
+            if v4_c:
+                cols.append(piv[v4_c].mean().idxmax())
+            cols += v5_c
+            seeds = list(piv.index)
+            ref = piv["linear_fe3"] if "linear_fe3" in piv.columns else None
+            rows = []
+            for c in cols:
+                s = piv[c]
+                d = (s - ref).dropna() if ref is not None and c != "linear_fe3" else []
+                rows.append(f"| {c} | " + " | ".join(_f(s.get(sd)) for sd in seeds)
+                            + f" | {s.mean():.3f} ± {s.std(ddof=1):.3f} | " + (f"{d.mean():+.3f}" if len(d) else "n/a") + " |")
+            L += ["`sector` robustness: test macro-F1 per ticker-split seed, mean ± sd over seeds, and the mean paired "
+                  "change against `linear_fe3`" + (f" (`{cols[1]}` is the best v4 model by mean test macro-F1)"
+                                                   if v4_c and len(cols) > 1 and cols[1] in v4_c else "")
+                  + ". Source: `results/robustness.csv`.", "",
+                  "| Model | " + " | ".join(f"seed {sd}" for sd in seeds) + " | mean ± sd | Δ vs linear_fe3 |",
+                  "|---|" + "|".join(["---:"] * (len(seeds) + 2)) + "|"] + rows + [""]
+            ref_c = cols[1] if v4_c and cols[1] in v4_c else ("linear_fe3" if ref is not None else None)
+            bn = piv[v5_c].mean().idxmax()
+            if ref_c:
+                d = (piv[bn] - piv[ref_c]).dropna()
+                rob_parts.append(f"over the {len(d)} ticker-split seeds the paired mean test macro-F1 difference of {bn} "
+                             f"({piv[bn].mean():.3f}) against {ref_c} ({piv[ref_c].mean():.3f}) is {d.mean():+.3f} "
+                             f"(higher in {int((d > 0).sum())} of {len(d)} seeds, seed-to-seed sd of the difference "
+                             f"{d.std(ddof=1):.3f})")
+    if n_cmp:
+        L.append(f"On the test split, with the best model of each family chosen by validation (main metric: R² for "
+                 f"regression, macro-F1 for `sector`), the best v5 model against the best v1-v4 model is: "
+                 + "; ".join(parts) + f". The best v5 model is better on {wins} of {n_cmp} targets"
+                 + (", so v5 does not beat the v1-v4 benchmark on every target." if wins < n_cmp else "."))
+    if rob_parts:
+        L.append("Robustness: " + "; ".join(rob_parts) + ".")
+    if L and L[-1] != "":
+        L.append("")
+    return L
 
 
 def build_block(results: Path) -> str:
@@ -349,6 +460,7 @@ def build_block(results: Path) -> str:
     lines += [""] + build_v2(results)
     lines += build_v3(results)
     lines += build_v4(results)
+    lines += build_v5(results)
     lines += ["All metrics (validation and test, MAE/RMSE/QLIKE, accuracy, log loss): "
               "[`results/metrics.csv`](results/metrics.csv); feature gain: "
               "[`results/feature_importance.csv`](results/feature_importance.csv)."]

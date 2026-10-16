@@ -212,6 +212,7 @@ All metrics (validation and test, MAE/RMSE/QLIKE, accuracy, log loss): [`results
 - Each ticker contributes many correlated monthly observations; the grouped-target test sets contain few tickers, so those scores are noisy. Sector metrics are observation-level, and the classes are imbalanced (hence macro-F1).
 - Principal components for the grouped targets are fitted on training tickers, whose own returns enter their PC factors; held-out tickers' loadings do not have that self-contribution.
 - `vol_1m` windows with zero realized volatility are dropped (count in `results/run_info.json`). QLIKE for `vol_1m` uses the log-normal mean variance forecast `exp(2·pred + 2·s²)` with `s²` the validation residual variance.
+- The v5 variants exist in code: pretraining with far contrastive positives (two views of the same stock at least a year apart) and a same-date comove-profile sector feature set; their benchmark rows will appear after the Kaggle pretraining run.
 
 ## How to run
 

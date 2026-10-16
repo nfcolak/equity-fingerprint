@@ -137,3 +137,64 @@ def sector_profile_features(p: Panel, pos: np.ndarray, train_tickers: list[str],
     df.insert(0, "ticker", np.tile(np.array(p.tickers, dtype=object), len(pos)))
     df.insert(0, "pos", np.repeat(pos, nt))
     return df, names
+
+
+def fp_profile_features(comove: pd.DataFrame, train_tickers: list[str], sec_map: dict[str, str],
+                        m: int = KNN_M, K: int = VOTE_K):
+    """Co-movement features from learned comove vectors; returns (frame keyed by pos, ticker, feature names).
+
+    ``comove`` has columns pos, ticker, [date,] fc_0..fc_<n-1> (unit-norm rows). On each ``pos`` the references
+    are the labelled TRAIN tickers with a vector at that pos; cosine to them gives fpprof_knn_<class> (mean of
+    the top-m per class, NaN if the class has no reference that day) and fpprof_vote_<class> (clipped-cosine
+    weighted vote among the top-K references overall). A ticker is excluded from its own references.
+    """
+    fc = [c for c in comove.columns if c.startswith("fc_")]
+    ref_set = {t for t in train_tickers if t in sec_map}
+    classes = sorted({sec_map[t] for t in set(comove["ticker"]) & ref_set})
+    nc = len(classes)
+    cidx = {k: c for c, k in enumerate(classes)}
+    pos_l, tick_l, knn_l, vote_l = [], [], [], []
+    for pos, g in comove.groupby("pos", sort=True):
+        tick = g["ticker"].to_numpy()
+        Z = g[fc].to_numpy(np.float64)
+        isref = np.array([t in ref_set for t in tick])
+        n = len(g)
+        knn = np.full((n, nc), np.nan)
+        vote = np.full((n, nc), np.nan)
+        if isref.any():
+            rt = tick[isref]
+            cls_of = np.array([cidx[sec_map[t]] for t in rt])
+            S = Z @ Z[isref].T                                        # n x nref
+            S[tick[:, None] == rt[None, :]] = np.nan                  # a ticker never references itself
+            valid = ~np.isnan(S)
+            Sf = np.where(valid, S, -np.inf)
+            for c in range(nc):
+                top = -np.sort(-Sf[:, cls_of == c], axis=1)[:, :m]
+                ok = np.isfinite(top)
+                cnt = ok.sum(1)
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    knn[:, c] = np.where(cnt > 0, np.where(ok, top, 0.0).sum(1) / cnt, np.nan)
+            top = np.argsort(-Sf, axis=1)[:, :min(K, S.shape[1])]
+            wts = np.take_along_axis(np.where(valid, np.clip(S, 0, None), 0.0), top, axis=1)
+            tot = wts.sum(1)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                vote = np.where(tot[:, None] > 0,
+                                np.einsum("nk,nkc->nc", wts, np.eye(nc)[cls_of][top]) / tot[:, None], np.nan)
+        pos_l.append(np.full(n, pos))
+        tick_l.append(tick)
+        knn_l.append(knn)
+        vote_l.append(vote)
+    knn_a = np.concatenate(knn_l) if knn_l else np.empty((0, nc))
+    vote_a = np.concatenate(vote_l) if vote_l else np.empty((0, nc))
+    data, names = {}, []
+    for c, k in enumerate(classes):
+        s = _slug(k)
+        for key, arr, lab in (("knn", knn_a, f"Mean top-{m} comove cosine to train {k} stocks"),
+                              ("vote", vote_a, f"Comove neighbour vote share of {k} (top {K})")):
+            data[f"fpprof_{key}_{s}"] = arr[:, c]
+            LABELS[f"fpprof_{key}_{s}"] = lab
+            names.append(f"fpprof_{key}_{s}")
+    df = pd.DataFrame(data)
+    df.insert(0, "ticker", np.concatenate(tick_l) if tick_l else np.array([], dtype=object))
+    df.insert(0, "pos", np.concatenate(pos_l) if pos_l else np.array([], dtype=int))
+    return df, names

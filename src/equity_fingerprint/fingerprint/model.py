@@ -12,6 +12,10 @@ from torch import nn
 from .windows import CHANNELS, PATCH, WINDOW
 
 
+def mlp(d_in, d_hid, d_out):
+    return nn.Sequential(nn.Linear(d_in, d_hid), nn.GELU(), nn.Linear(d_hid, d_out))
+
+
 class FingerprintEncoder(nn.Module):
     def __init__(self, n_channels: int = len(CHANNELS) + 1, window: int = WINDOW, patch: int = PATCH,
                  d_model: int = 128, n_layers: int = 4, n_heads: int = 4, dropout: float = 0.1):
@@ -46,3 +50,17 @@ def load_encoder(path, device):
     enc = FingerprintEncoder(**ckpt["config"])
     enc.load_state_dict(ckpt["state_dict"])
     return enc.to(device).eval(), ckpt
+
+
+def load_comove_head(path, device):
+    """Comove head of a pretraining checkpoint -> mlp(d, d, 64) in eval mode on ``device``; None if the
+    checkpoint has no heads (v4 checkpoints)."""
+    ckpt = torch.load(path, map_location=device, weights_only=True)
+    heads = ckpt.get("heads_state_dict") or {}
+    state = {n[len("comove."):]: v for n, v in heads.items() if n.startswith("comove.")}
+    if not state:
+        return None
+    d = ckpt["heads_config"]["d_model"]
+    head = mlp(d, d, ckpt["heads_config"]["comove_out"])
+    head.load_state_dict(state)
+    return head.to(device).eval()

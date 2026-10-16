@@ -22,7 +22,7 @@ import shap  # noqa: E402
 from . import features as F  # noqa: E402
 from . import targets as T  # noqa: E402
 from .data import _data_dir  # noqa: E402
-from .embed import sector_profile_features  # noqa: E402
+from .embed import fp_profile_features, sector_profile_features  # noqa: E402
 from .models import classification_metrics, regression_metrics, run_target, ticker_level_metrics  # noqa: E402
 
 ROB_SEEDS = [42, 1, 2, 3, 4]
@@ -32,6 +32,8 @@ ROOT = Path(__file__).resolve().parents[2]
 RESULTS = ROOT / "results"
 SHAP_SAMPLE = 1500
 KEYS = ["pos", "ticker"]
+FP_ARMS = (("ssl", "fp"), ("ssl_aux", "fpa"))  # v4 frozen-embedding arms -> column prefix
+FP_FAR_ARMS = (("ssl_far", "fpf"), ("ssl_aux_far", "fpfa"))  # v5 optional far-positive arms
 FT_MODELS = {"fpnet": "fp_e2e", "fpnet_a": "fpa_e2e"}  # v4 fine-tuned models -> features label
 
 
@@ -109,7 +111,7 @@ def fp_dir() -> Path:
 def load_fp(d: Path):
     """Frozen embeddings (fp_* from arm ssl, fpa_* from ssl_aux) keyed by pos/ticker; missing files are skipped."""
     frames, cols = [], {"fp": [], "fpa": []}
-    for arm, pre in (("ssl", "fp"), ("ssl_aux", "fpa")):
+    for arm, pre in FP_ARMS + FP_FAR_ARMS:
         path = d / f"fp_embeddings_{arm}.parquet"
         if not path.exists():
             continue
@@ -118,6 +120,27 @@ def load_fp(d: Path):
         cols[pre] = [c for c in e.columns if c not in KEYS]
         frames.append(e)
     return frames, cols
+
+
+def load_comove(d: Path):
+    """v5 learned co-movement vectors (ssl_aux_far, else ssl_far); None when neither file exists."""
+    for arm in ("ssl_aux_far", "ssl_far"):
+        path = d / f"fp_comove_{arm}.parquet"
+        if path.exists():
+            return pd.read_parquet(path)
+    return None
+
+
+def add_fp_profile(ds: dict, comove: pd.DataFrame, sec_map: dict):
+    """Add fpprof_* columns to the sector dataset; references are that seed's train-split tickers only."""
+    d = ds["sector"]
+    train_tickers = sorted(d.loc[d["split"] == "train", "ticker"].unique())
+    prof_df, prof_cols = fp_profile_features(comove, train_tickers, sec_map)
+    return {**ds, "sector": d.merge(prof_df, on=KEYS, how="left")}, prof_cols
+
+
+def fp_profile_sets(fe3_cols: list[str], prof_cols: list[str]) -> list[tuple[str, list[str]]]:
+    return [("fpprof", prof_cols), ("fe3fpprof", fe3_cols + prof_cols)]
 
 
 def merge_fp(ds: dict, frames: list) -> dict:
@@ -131,6 +154,10 @@ def fp_sets(cols: dict) -> list[tuple[str, list[str]]]:
     sets = [("fp", cols["fp"])] if cols["fp"] else []
     if cols["fpa"]:
         sets += [("fpa", cols["fpa"]), ("fefpa", F.FE_FEATURES + cols["fpa"])]
+    if cols.get("fpf"):  # v5 far-positive arms, appended after the v4 sets
+        sets += [("fpf", cols["fpf"])]
+    if cols.get("fpfa"):
+        sets += [("fpfa", cols["fpfa"]), ("fefpfa", F.FE_FEATURES + cols["fpfa"])]
     return sets
 
 
@@ -256,6 +283,11 @@ def main() -> None:
         datasets = merge_fp(datasets, fp_frames)
         for t in T.TARGETS:
             EXTRA_SETS.setdefault(t, []).extend(fp_sets(fp_cols))
+    # ---- v5: learned co-movement profile for sector (file missing -> no fpprof rows)
+    comove = load_comove(fp_d)
+    if comove is not None:
+        datasets, prof_cols = add_fp_profile(datasets, comove, sec_map)
+        EXTRA_SETS["sector"].extend(fp_profile_sets(fe3_cols, prof_cols))
 
     # ---- models
     metrics, imps, hps, rob = [], [], {}, []
@@ -296,9 +328,14 @@ def main() -> None:
         if dump:
             labels.append(label_frame(seed, ds))
         ds = merge_fp(ds, fp_frames)
+        prof3 = []
+        if comove is not None:
+            ds, prof_cols = add_fp_profile(ds, comove, sec_map)
+            prof3 = fp_profile_sets(cols3, prof_cols)
         seed_ds[seed] = ds
         for t in T.GROUP_TARGETS:
             extra = ([("fe3", cols3)] if t == "sector" else []) + (fp_sets(fp_cols) if fp_frames else [])
+            extra += prof3 if t == "sector" else []
             rows, _, _, _ = run_target(t, ds[t], t, F.RAW_FEATURES, F.FE_FEATURES, t == "sector", fe2_cols=cols2,
                                     extra_sets=extra or None)
             rob += robustness_rows(seed, rows, ds)
@@ -352,7 +389,7 @@ def main() -> None:
         "robustness_seeds": ROB_SEEDS,
         "runtime_seconds": round(time.time() - t_start, 1),
     }
-    fp_info = {arm: json.loads(p.read_text()) for arm in ("ssl", "ssl_aux")
+    fp_info = {arm: json.loads(p.read_text()) for arm, _ in FP_ARMS + FP_FAR_ARMS
                if (p := fp_d / f"fp_embeddings_{arm}.json").exists()}
     logs = {name: {str(s): json.loads(p.read_text()) for s in ROB_SEEDS
                    if (p := fp_d / f"{name}_log_seed{s}.json").exists()} for name in FT_MODELS}
