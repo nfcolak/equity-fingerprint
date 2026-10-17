@@ -385,7 +385,8 @@ def build_v5(results: Path) -> list[str]:
                   + ". Source: `results/robustness.csv`.", "",
                   "| Model | " + " | ".join(f"seed {sd}" for sd in seeds) + " | mean ± sd | Δ vs linear_fe3 |",
                   "|---|" + "|".join(["---:"] * (len(seeds) + 2)) + "|"] + rows + [""]
-            ref_c = cols[1] if v4_c and cols[1] in v4_c else ("linear_fe3" if ref is not None else None)
+            old_ref = (['linear_fe3'] if ref is not None else []) + ([cols[1]] if v4_c and cols[1] in v4_c else [])
+            ref_c = piv[old_ref].mean().idxmax() if old_ref else None  # best v1-v4 model by mean test macro-F1
             bn = piv[v5_c].mean().idxmax()
             if ref_c:
                 d = (piv[bn] - piv[ref_c]).dropna()
