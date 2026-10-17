@@ -2,6 +2,8 @@
 
 A stock's daily price and volume history is a fingerprint: how much it moves, how it co-moves with the market and with other stocks, how much it trades. This project asks how much of a Swiss stock's metadata can be read back from that fingerprint alone: its future volatility, beta, liquidity, its market capitalisation and its sector. It compares a deliberately simple feature set against an engineered one, with a linear model and a gradient boosted tree model, under a leakage-controlled time / ticker split.
 
+How to read the results: the headline section scores the static targets (`sector`, `log_mcap`) once per stock with repeated cross-validation over all Swiss stocks, and reads the forward targets (`vol_1m`, `beta_1y`, `liquidity_1m`) against a persistence model and the target's own noise ceiling. The per-observation benchmark of v1-v5, including the self-supervised fingerprint encoder (v4, v5), follows below it unchanged; the encoder did not beat the engineered features beyond noise. A scope check (2026-10-17) found that sector accuracy is limited mainly by the number of Swiss stocks: the same simple method scores clearly higher on thousands of US stocks and drops to the Swiss level when trained on as few stocks.
+
 ## Data
 
 - Universe: SIX Swiss Exchange primary listings (`Primary listing == TRUE` in the SIX equity issuer list), 231 tickers as `<Symbol>.SW`. Of these, 221 returned prices from yfinance and 213 are quoted in CHF; the 207 with at least 252 prior trading rows enter the experiments (`results/run_info.json`).
@@ -40,6 +42,40 @@ Leakage controls: features see only data up to the feature date, targets only la
 ## Results
 
 <!-- results:start -->
+### Headline (v6 protocol)
+
+Static targets, one row per stock: repeated stratified 5-fold cross-validation over all eligible Swiss stocks (10 repeats), hyper-parameters by inner CV on the training folds only. Mean ± sd over repeats; 95% interval from a stock bootstrap of repeat 0. `sector` uses each stock's full daily price history; `log_mcap` is close × today's share count at the latest month-end (no historical share-count bias). Source: `results/static_cv.csv`.
+
+`sector` (203 stocks, 9 classes):
+
+| Model | macro_f1 | weighted_f1 | accuracy | balanced_accuracy | macro_f1 95% interval |
+|---|---:|---:|---:|---:|---:|
+| baseline | 0.044 ± 0.000 | 0.097 ± 0.000 | 0.246 ± 0.000 | 0.111 ± 0.000 | [0.035, 0.052] |
+| knn | 0.471 ± 0.025 | 0.563 ± 0.016 | 0.589 ± 0.015 | 0.441 ± 0.020 | [0.392, 0.571] |
+| prof_logit | 0.428 ± 0.024 | 0.569 ± 0.019 | 0.624 ± 0.015 | 0.440 ± 0.016 | [0.393, 0.516] |
+| femean_logit | 0.276 ± 0.024 | 0.377 ± 0.026 | 0.395 ± 0.027 | 0.280 ± 0.022 | [0.226, 0.345] |
+| prof_femean_logit | 0.418 ± 0.021 | 0.552 ± 0.023 | 0.571 ± 0.028 | 0.425 ± 0.024 | [0.343, 0.471] |
+
+`log_mcap` (204 stocks):
+
+| Model | r2 | mae | r2 95% interval |
+|---|---:|---:|---:|
+| baseline | -0.011 ± 0.007 | 1.643 ± 0.007 | [-0.028, 0.000] |
+| ridge | 0.892 ± 0.005 | 0.506 ± 0.009 | [0.869, 0.920] |
+| lgbm | 0.886 ± 0.007 | 0.544 ± 0.018 | [0.855, 0.913] |
+
+Forward targets on the test split, read against two references: a persistence model (one feature, OLS fitted on train: past 21-day log vol, past 252-day beta, past 21-day log traded value) and the split-half reliability of the target (odd vs even days of the forward window, Spearman-Brown corrected). The reliability is an upper bound: it assumes a perfect forecast of the true future value. Best model = highest validation R² over all model rows. Skill = (R² − persistence R²) / (1 − persistence R²). Source: `results/ceilings.csv`, `results/metrics.csv`.
+
+| Target | Best model (by validation) | Test R² | Persistence R² | Reliability ceiling | Share of ceiling | Skill over persistence |
+|---|---|---:|---:|---:|---:|---:|
+| `vol_1m` | lgbm_fefpfa | 0.630 | 0.426 | 0.807 | 78% | 0.35 |
+| `beta_1y` | fpnet_a | 0.630 | 0.522 | 0.790 | 80% | 0.23 |
+| `liquidity_1m` | lgbm_fefpfa | 0.957 | 0.949 | 0.992 | 96% | 0.16 |
+
+`liquidity_1m` is almost fully explained by last month's traded value, so it is reported but is not a headline result.
+
+### Per-observation benchmark (v1-v5)
+
 Test split (time targets: observations from 2024-01-01 on; grouped targets: held-out tickers). Main metric: R² for the four regression targets (on the log scale for `vol_1m`, `log_mcap`, `liquidity_1m`), macro-F1 for `sector`. Source: `results/metrics.csv`.
 
 | Target | Metric | Test obs | baseline | linear_raw | linear_fe | lgbm_raw | lgbm_fe |
@@ -276,6 +312,8 @@ All metrics (validation and test, MAE/RMSE/QLIKE, accuracy, log loss): [`results
 python -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/pip install -e .
 env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.data     # download + cache data/ (git-ignored)
 env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.run      # features, targets, models -> results/
+env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.static_cv  # v6: per-stock sector / log_mcap, repeated CV
+env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.ceilings   # v6: persistence and noise ceilings
 env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.report   # rebuild the results block above
 ```
 

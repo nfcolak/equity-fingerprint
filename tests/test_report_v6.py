@@ -1,0 +1,49 @@
+"""report.build_v6: headline section from static_cv.csv / ceilings.csv; absent files -> no section."""
+import tempfile
+import unittest
+from pathlib import Path
+
+import pandas as pd
+
+from equity_fingerprint import report
+
+
+def _metrics(d: Path):
+    rows = []
+    for t in ("vol_1m", "beta_1y", "liquidity_1m"):
+        for mod, v_val, v_test in (("baseline", 0.0, 0.0), ("linear_fe", 0.5, 0.6), ("lgbm_fe", 0.4, 0.7)):
+            for split, v in (("val", v_val), ("test", v_test)):
+                rows.append(dict(target=t, model=mod, features="fe", split=split, metric="r2", value=v, n_obs=10))
+    pd.DataFrame(rows).to_csv(d / "metrics.csv", index=False)
+
+
+class BuildV6Test(unittest.TestCase):
+    def test_absent_files_give_no_section(self):
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t)
+            _metrics(d)
+            self.assertEqual(report.build_v6(d), [])
+
+    def test_tables_from_files(self):
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t)
+            _metrics(d)
+            pd.DataFrame([dict(target="sector", model="knn", metric=m, mean=0.5, sd=0.02, ci_lo=0.4, ci_hi=0.6,
+                               n_stocks=200, n_repeats=10, n_classes=9)
+                          for m in ("macro_f1", "weighted_f1", "accuracy", "balanced_accuracy")]
+                         + [dict(target="log_mcap", model="ridge", metric=m, mean=0.9, sd=0.01, ci_lo=0.85, ci_hi=0.92,
+                                 n_stocks=204, n_repeats=10, n_classes=None) for m in ("r2", "mae")]
+                         ).to_csv(d / "static_cv.csv", index=False)
+            pd.DataFrame([dict(target=t, split="test", n_obs=10, split_half_r=0.6, reliability=0.8,
+                               persistence_ols_r2=0.4, persistence_identity_r2=0.3, persistence_feature="x")
+                          for t in ("vol_1m", "beta_1y", "liquidity_1m")]).to_csv(d / "ceilings.csv", index=False)
+            text = "\n".join(report.build_v6(d))
+            self.assertIn("| knn | 0.500 ± 0.020", text)
+            self.assertIn("[0.400, 0.600]", text)
+            self.assertIn("| ridge | 0.900 ± 0.010", text)
+            # best by validation is linear_fe (val 0.5), test 0.6; share 0.6/0.8 = 75%; skill (0.6-0.4)/0.6 = 0.33
+            self.assertIn("| `vol_1m` | linear_fe | 0.600 | 0.400 | 0.800 | 75% | 0.33 |", text)
+
+
+if __name__ == "__main__":
+    unittest.main()

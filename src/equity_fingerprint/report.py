@@ -406,11 +406,69 @@ def build_v5(results: Path) -> list[str]:
     return L
 
 
+def build_v6(results: Path) -> list[str]:
+    """Headline section (v6 protocol): static targets per stock with repeated CV, forward targets against their
+    persistence baseline and split-half noise ceiling. [] when neither v6 file exists."""
+    sc_p, ce_p = results / "static_cv.csv", results / "ceilings.csv"
+    if not sc_p.exists() and not ce_p.exists():
+        return []
+    L = ["### Headline (v6 protocol)", ""]
+    if sc_p.exists():
+        sc = pd.read_csv(sc_p)
+        L += ["Static targets, one row per stock: repeated stratified 5-fold cross-validation over all eligible Swiss "
+              "stocks (10 repeats), hyper-parameters by inner CV on the training folds only. Mean ± sd over repeats; "
+              "95% interval from a stock bootstrap of repeat 0. `sector` uses each stock's full daily price history; "
+              "`log_mcap` is close × today's share count at the latest month-end (no historical share-count bias). "
+              "Source: `results/static_cv.csv`.", ""]
+        for t, cols in (("sector", ["macro_f1", "weighted_f1", "accuracy", "balanced_accuracy"]), ("log_mcap", ["r2", "mae"])):
+            d = sc[sc.target == t]
+            if d.empty:
+                continue
+            n = int(d["n_stocks"].iloc[0])
+            extra = f", {int(d['n_classes'].iloc[0])} classes" if t == "sector" and "n_classes" in d else ""
+            L += [f"`{t}` ({n} stocks{extra}):", "",
+                  "| Model | " + " | ".join(cols) + f" | {cols[0]} 95% interval |",
+                  "|---|" + "|".join(["---:"] * (len(cols) + 1)) + "|"]
+            for mod in dict.fromkeys(d["model"]):
+                r = d[d.model == mod].set_index("metric")
+                cells = [f"{r.loc[c, 'mean']:.3f} ± {r.loc[c, 'sd']:.3f}" if c in r.index else "n/a" for c in cols]
+                ci = (f"[{r.loc[cols[0], 'ci_lo']:.3f}, {r.loc[cols[0], 'ci_hi']:.3f}]"
+                      if cols[0] in r.index and pd.notna(r.loc[cols[0], "ci_lo"]) else "n/a")
+                L.append(f"| {mod} | " + " | ".join(cells) + f" | {ci} |")
+            L.append("")
+    if ce_p.exists():
+        ce = pd.read_csv(ce_p)
+        m = pd.read_csv(results / "metrics.csv")
+        L += ["Forward targets on the test split, read against two references: a persistence model (one feature, OLS "
+              "fitted on train: past 21-day log vol, past 252-day beta, past 21-day log traded value) and the split-half "
+              "reliability of the target (odd vs even days of the forward window, Spearman-Brown corrected). The "
+              "reliability is an upper bound: it assumes a perfect forecast of the true future value. Best model = "
+              "highest validation R² over all model rows. Skill = (R² − persistence R²) / (1 − persistence R²). "
+              "Source: `results/ceilings.csv`, `results/metrics.csv`.", "",
+              "| Target | Best model (by validation) | Test R² | Persistence R² | Reliability ceiling | Share of ceiling | Skill over persistence |",
+              "|---|---|---:|---:|---:|---:|---:|"]
+        for t in ("vol_1m", "beta_1y", "liquidity_1m"):
+            v = m[(m.target == t) & (m.split == "val") & (m.metric == "r2") & (m.model != "baseline")]
+            c = ce[(ce.target == t) & (ce.split == "test")]
+            if v.empty or c.empty:
+                continue
+            best = v.loc[v["value"].idxmax(), "model"]
+            r2 = _val(m, t, best, "r2")
+            if r2 is None:
+                continue
+            pr, rel = float(c["persistence_ols_r2"].iloc[0]), float(c["reliability"].iloc[0])
+            L.append(f"| `{t}` | {best} | {r2:.3f} | {pr:.3f} | {rel:.3f} | {r2 / rel:.0%} | {(r2 - pr) / (1 - pr):.2f} |")
+        L += ["", "`liquidity_1m` is almost fully explained by last month's traded value, so it is reported but is not a "
+                  "headline result.", ""]
+    return L
+
+
 def build_block(results: Path) -> str:
     m = pd.read_csv(results / "metrics.csv")
     test = m[m["split"] == "test"]
 
-    lines = [
+    v6 = build_v6(results)
+    lines = v6 + (["### Per-observation benchmark (v1-v5)", ""] if v6 else []) + [
         "Test split (time targets: observations from 2024-01-01 on; grouped targets: held-out tickers). "
         "Main metric: R² for the four regression targets (on the log scale for `vol_1m`, `log_mcap`, "
         "`liquidity_1m`), macro-F1 for `sector`. Source: `results/metrics.csv`.",
