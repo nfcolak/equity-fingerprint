@@ -43,6 +43,15 @@ class BuildV6Test(unittest.TestCase):
             self.assertIn("| ridge | 0.900 ± 0.010", text)
             # best by validation is linear_fe (val 0.5), test 0.6; skill (0.6-0.4)/0.6 = 0.33; reliability 0.8
             self.assertIn("| `vol_1m` | linear_fe | 0.600 | 0.400 | 0.33 | 0.800 |", text)
+            self.assertNotIn("(v9)", text)   # no v9 file -> no v9 headline row
+            v9 = [dict(target="log_mcap", model="ridge_md_ext", metric=m, mean=v, sd=0.003, ci_lo=lo, ci_hi=hi,
+                       n_stocks=204, n_repeats=10, n_classes=None)
+                  for m, v, lo, hi in (("r2", 0.924, 0.898, 0.942), ("mae", 0.437, 0.39, 0.48),
+                                       ("delta_r2_vs_ridge", 0.031, 0.015, 0.047))]
+            pd.DataFrame(v9).to_csv(d / "static_v9_mcap.csv", index=False)
+            text = "\n".join(report.build_v6(d))
+            self.assertIn("| ridge_md_ext (v9) | 0.924 ± 0.003 | 0.437 ± 0.003 | [0.898, 0.942] |", text)
+            self.assertIn("+0.031 R² [+0.015, +0.047]", text)
 
     def test_forward_v7_table(self):
         with tempfile.TemporaryDirectory() as t:

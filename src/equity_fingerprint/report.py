@@ -11,6 +11,7 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[2]
 START, END = "<!-- results:start -->", "<!-- results:end -->"
+HEADLINE_MCAP_V9 = "ridge_md_ext"
 TARGETS = ["vol_1m", "beta_1y", "log_mcap", "liquidity_1m", "sector"]
 MODELS = ["baseline", "linear_raw", "linear_fe", "lgbm_raw", "lgbm_fe"]
 MAIN = {t: ("macro_f1" if t == "sector" else "r2") for t in TARGETS}
@@ -439,6 +440,22 @@ def build_v6(results: Path) -> list[str]:
                 ci = (f"[{r.loc[cols[0], 'ci_lo']:.3f}, {r.loc[cols[0], 'ci_hi']:.3f}]"
                       if cols[0] in r.index and pd.notna(r.loc[cols[0], "ci_lo"]) else "n/a")
                 L.append(f"| {mod} | " + " | ".join(cells) + f" | {ci} |")
+            v9_p = results / "static_v9_mcap.csv"
+            if t == "log_mcap" and v9_p.exists():   # user decision 2026-10-17: v9 headline log_mcap row
+                v9 = pd.read_csv(v9_p)
+                r = v9[v9.model == HEADLINE_MCAP_V9].set_index("metric")
+                if all(c in r.index for c in cols):
+                    cells = [f"{r.loc[c, 'mean']:.3f} ± {r.loc[c, 'sd']:.3f}" for c in cols]
+                    k = "delta_r2_vs_ridge"
+                    L.append(f"| {HEADLINE_MCAP_V9} (v9) | " + " | ".join(cells)
+                             + f" | [{r.loc[cols[0], 'ci_lo']:.3f}, {r.loc[cols[0], 'ci_hi']:.3f}] |")
+                    L += ["", f"`{HEADLINE_MCAP_V9}` (v9, same folds and protocol): ridge trained on several past "
+                          "month-ends of each training stock (1 to 12 dates, chosen by inner CV; converted to today "
+                          "by the price ratio) with extra price/volume features (index-review volume spike, "
+                          "traded-value structure, SMI co-movement). Paired difference to `ridge`: "
+                          f"{r.loc[k, 'mean']:+.3f} R² [{r.loc[k, 'ci_lo']:+.3f}, {r.loc[k, 'ci_hi']:+.3f}]. It was "
+                          "picked after comparing about ten v9 arms on these same folds, so it carries a small "
+                          "selection optimism. Source: `results/static_v9_mcap.csv`."]
             L.append("")
     if ce_p.exists():
         ce = pd.read_csv(ce_p)
