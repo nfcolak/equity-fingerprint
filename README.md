@@ -2,7 +2,7 @@
 
 A stock's daily price and volume history is a fingerprint: how much it moves, how it co-moves with the market and with other stocks, how much it trades. This project asks how much of a Swiss stock's metadata can be read back from that fingerprint alone: its future volatility, beta, liquidity, its market capitalisation and its sector. It compares a deliberately simple feature set against an engineered one, with a linear model and a gradient boosted tree model, under a leakage-controlled time / ticker split.
 
-How to read the results: the headline section scores the static targets (`sector`, `log_mcap`) once per stock with repeated cross-validation over all Swiss stocks, and reads the forward targets (`vol_1m`, `beta_1y`, `liquidity_1m`) against a persistence model and the target's own noise ceiling. The per-observation benchmark of v1-v5, including the self-supervised fingerprint encoder (v4, v5), follows below it unchanged; the encoder did not beat the engineered features beyond noise. An internal scope check (2026-10-17, not part of `results/`) found that sector accuracy is limited mainly by the number of Swiss stocks: the same simple method scores clearly higher on thousands of US stocks and drops to the Swiss level when trained on as few stocks.
+How to read the results: the headline section scores the static targets (`sector`, `log_mcap`) once per stock with repeated cross-validation over all Swiss stocks, and reads the forward targets (`vol_1m`, `beta_1y`, `liquidity_1m`) against a persistence model and the target's own noise ceiling. The per-observation benchmark of v1-v5, including the self-supervised fingerprint encoder (v4, v5), follows below it unchanged; the encoder did not beat the engineered features beyond noise. An internal scope check (2026-10-17, not part of `results/`) found that sector accuracy is limited mainly by the number of Swiss stocks: the same simple method scores clearly higher on thousands of US stocks and drops to the Swiss level when trained on as few stocks. The v9 add-on experiments (own result files, headline rows unchanged) found one clear gain: `log_mcap` per-stock R² rises from 0.892 (ridge) to 0.924 with several past month-ends per training stock plus extra traded-value / index-review / SMI features, and to 0.926 when averaged with TabPFN v2 (paired intervals above zero). The `vol_1m` and `beta_1y` gains over the previous best arms are small (+0.005 and +0.008 test R²) with intervals that reach or span zero, the sector vote / time-weighting changes did not help, and European reference stocks for sector (a separate, rule-flagged file) add +0.018 macro-F1 over `knn_auto` with an interval spanning zero.
 
 ## Data
 
@@ -121,6 +121,91 @@ Forward targets on the test split, read against two references: a persistence mo
 | ridge_mrfe ★ | 0.676 | 0.653 | +0.021 | [+0.001, +0.045] |
 | lgbm_femrpca | 0.669 | 0.627 | -0.005 | [-0.031, +0.020] |
 | avg_mrfe | 0.676 | 0.653 | +0.021 | [+0.001, +0.045] |
+
+### v9 add-on experiments
+
+Each idea comes from a probe round (validation / training folds only) and was then run once under the protocols above. Forward files: every choice on validation, test read once, ★ = arm chosen on validation, Δ with a 95% stock-block bootstrap interval. Static files: same repeated CV as the headline, Δ = paired difference to the named reference (same folds), 95% stock-bootstrap interval.
+
+`beta_1y`, residual target: the models predict the future beta minus a base beta (OLS, Welch, Vasicek-shrunk Welch, or a mix with a size-group prior) and add the base back. Source: `results/forward_v9_beta.csv`.
+
+| Arm | Val R² | Test R² | Test Δ vs linear_fe [95%] | Test Δ vs avg_fewelch [95%] |
+|---|---:|---:|---:|---:|
+| linear_fe | 0.662 | 0.632 | – | -0.013 [-0.025, +0.001] |
+| lgbm_fe | 0.659 | 0.603 | -0.029 [-0.063, +0.002] | -0.042 [-0.073, -0.012] |
+| avg_fe | 0.672 | 0.635 | +0.003 [-0.013, +0.018] | -0.010 [-0.027, +0.006] |
+| linear_fewelch | 0.670 | 0.639 | +0.007 [-0.004, +0.019] | -0.005 [-0.011, +0.001] |
+| lgbm_fewelch | 0.659 | 0.624 | -0.008 [-0.035, +0.019] | -0.020 [-0.041, -0.001] |
+| avg_fewelch | 0.674 | 0.645 | +0.013 [-0.001, +0.025] | – |
+| linear_resols | 0.690 | 0.614 | -0.018 [-0.059, +0.012] | -0.030 [-0.068, -0.006] |
+| lgbm_resols | 0.674 | 0.582 | -0.049 [-0.102, -0.011] | -0.062 [-0.120, -0.021] |
+| avg_resols | 0.692 | 0.619 | -0.013 [-0.052, +0.013] | -0.026 [-0.063, -0.002] |
+| linear_resw252 | 0.700 | 0.632 | +0.000 [-0.027, +0.027] | -0.012 [-0.029, +0.004] |
+| lgbm_resw252 | 0.706 | 0.610 | -0.022 [-0.058, +0.011] | -0.035 [-0.063, -0.009] |
+| avg_resw252 | 0.711 | 0.634 | +0.002 [-0.029, +0.029] | -0.011 [-0.032, +0.008] |
+| linear_reswew | 0.694 | 0.618 | -0.014 [-0.046, +0.017] | -0.027 [-0.050, -0.006] |
+| lgbm_reswew | 0.704 | 0.606 | -0.026 [-0.064, +0.013] | -0.038 [-0.069, -0.009] |
+| avg_reswew | 0.710 | 0.627 | -0.005 [-0.037, +0.028] | -0.017 [-0.039, +0.005] |
+| linear_resvck | 0.704 | 0.639 | +0.007 [-0.023, +0.038] | -0.006 [-0.033, +0.021] |
+| lgbm_resvck | 0.710 | 0.617 | -0.015 [-0.061, +0.031] | -0.028 [-0.069, +0.012] |
+| avg_resvck | 0.716 | 0.640 | +0.009 [-0.030, +0.046] | -0.004 [-0.038, +0.028] |
+| linear_resmix | 0.702 | 0.645 | +0.013 [-0.008, +0.042] | +0.001 [-0.014, +0.020] |
+| lgbm_resmix | 0.708 | 0.632 | -0.000 [-0.032, +0.033] | -0.013 [-0.039, +0.014] |
+| avg_resmix ★ | 0.716 | 0.652 | +0.020 [-0.006, +0.049] | +0.008 [-0.011, +0.026] |
+| linear_resmixhar | 0.701 | 0.643 | +0.011 [-0.012, +0.040] | -0.002 [-0.018, +0.017] |
+| lgbm_resmixhar | 0.709 | 0.638 | +0.006 [-0.025, +0.039] | -0.006 [-0.030, +0.018] |
+| avg_resmixhar | 0.714 | 0.652 | +0.020 [-0.006, +0.050] | +0.008 [-0.010, +0.026] |
+
+`vol_1m` with new causal features (exponentially weighted vols, the same window one and two years earlier, month dummies, VIX and Euro Stoxx 50 vol), the HAR/GARCH set, and a stack (non-negative weights fitted on validation) of four arms. Source: `results/forward_v9_vol.csv`.
+
+| Arm | Val R² | Test R² | Test Δ vs linear_fe [95%] | Test Δ vs ridge_mrfe [95%] |
+|---|---:|---:|---:|---:|
+| linear_fe | 0.629 | 0.609 | – | -0.021 [-0.027, -0.016] |
+| lgbm_fe | 0.636 | 0.624 | +0.015 [+0.007, +0.024] | -0.006 [-0.015, +0.002] |
+| linear_fehexp | 0.642 | 0.621 | +0.012 [+0.007, +0.018] | -0.009 [-0.014, -0.004] |
+| linear_feseas | 0.644 | 0.614 | +0.005 [+0.002, +0.008] | -0.016 [-0.022, -0.012] |
+| linear_femonth | 0.635 | 0.612 | +0.003 [-0.001, +0.006] | -0.018 [-0.025, -0.013] |
+| linear_fevix | 0.638 | 0.613 | +0.004 [+0.002, +0.007] | -0.017 [-0.023, -0.011] |
+| linear_feall | 0.657 | 0.628 | +0.020 [+0.013, +0.027] | -0.002 [-0.008, +0.004] |
+| lgbm_feall | 0.662 | 0.617 | +0.009 [-0.001, +0.020] | -0.013 [-0.022, -0.004] |
+| avg_feall | 0.671 | 0.634 | +0.025 [+0.018, +0.034] | +0.004 [-0.002, +0.010] |
+| linear_fe3 | 0.638 | 0.617 | +0.008 [+0.003, +0.015] | -0.013 [-0.019, -0.008] |
+| ridge_mrfe | 0.646 | 0.630 | +0.021 [+0.016, +0.027] | – |
+| stack ★ | 0.672 | 0.635 | +0.027 [+0.019, +0.035] | +0.005 [-0.000, +0.011] |
+
+`log_mcap` with extra price/volume features (index-review volume spike, traded-value structure, SMI co-movement), several past month-ends per training stock (`*_md`, converted to today by the price ratio) and TabPFN v2 (untuned) (204 stocks). Source: `results/static_v9_mcap.csv`.
+
+| Model | r2 | mae | r2 95% interval | Δ r2 vs ridge [95%] |
+|---|---:|---:|---:|---:|
+| ridge | 0.892 ± 0.005 | 0.506 ± 0.009 | [0.862, 0.916] | – |
+| lgbm | 0.886 ± 0.007 | 0.544 ± 0.018 | [0.854, 0.907] | -0.007 [-0.027, +0.015] |
+| avg_ridge_lgbm | 0.898 ± 0.005 | 0.504 ± 0.009 | [0.871, 0.918] | +0.006 [-0.003, +0.016] |
+| ridge_ext | 0.911 ± 0.005 | 0.476 ± 0.014 | [0.884, 0.931] | +0.018 [+0.002, +0.033] |
+| lgbm_ext | 0.896 ± 0.005 | 0.517 ± 0.013 | [0.866, 0.917] | +0.004 [-0.016, +0.025] |
+| ridge_md | 0.914 ± 0.002 | 0.457 ± 0.006 | [0.888, 0.934] | +0.022 [+0.013, +0.033] |
+| ridge_md_ext | 0.924 ± 0.003 | 0.437 ± 0.005 | [0.898, 0.942] | +0.031 [+0.015, +0.047] |
+| tabpfn | 0.910 ± 0.004 | 0.457 ± 0.008 | [0.884, 0.932] | +0.018 [+0.006, +0.032] |
+| tabpfn_ext | 0.920 ± 0.003 | 0.441 ± 0.008 | [0.895, 0.938] | +0.027 [+0.013, +0.044] |
+| avg_ridge_md_ext_tabpfn_ext | 0.926 ± 0.002 | 0.425 ± 0.005 | [0.903, 0.944] | +0.034 [+0.020, +0.050] |
+
+`sector` kNN with class-prior-corrected votes (`*_prior`) and exponentially time-weighted residual correlations (`*_ew`) (203 stocks). Source: `results/static_v9_sector.csv`.
+
+| Model | macro_f1 | weighted_f1 | accuracy | balanced_accuracy | macro_f1 95% interval | Δ macro_f1 vs knn_auto [95%] |
+|---|---:|---:|---:|---:|---:|---:|
+| knn_auto | 0.598 ± 0.024 | 0.665 ± 0.016 | 0.672 ± 0.016 | 0.589 ± 0.023 | [0.518, 0.652] | – |
+| knn_auto_prior | 0.576 ± 0.022 | 0.651 ± 0.019 | 0.644 ± 0.022 | 0.592 ± 0.026 | [0.509, 0.629] | -0.022 [-0.048, +0.008] |
+| knn_auto_ew | 0.585 ± 0.033 | 0.655 ± 0.017 | 0.665 ± 0.014 | 0.578 ± 0.034 | [0.508, 0.640] | -0.012 [-0.033, +0.007] |
+| knn_auto_v9 | 0.575 ± 0.019 | 0.649 ± 0.017 | 0.644 ± 0.016 | 0.588 ± 0.021 | [0.507, 0.627] | -0.022 [-0.058, +0.017] |
+
+`sector` with European labelled stocks (data ≤ 2021-12-31, never evaluated) as extra kNN references. `ch_le2021` is the Swiss-only control in the same ≤ 2021 space; `pooled_full` uses full-history Swiss similarities plus Swiss-European ones; `knn_auto` is copied from `results/static_cv.csv`. This uses non-Swiss labels at prediction time (user decision 2026-10-17) and is not part of the headline (203 stocks). Source: `results/sector_eu.csv`.
+
+| Model | macro_f1 | weighted_f1 | accuracy | balanced_accuracy | macro_f1 95% interval | Δ macro_f1 vs ch_le2021 [95%] | Δ macro_f1 vs knn_resid [95%] | Δ macro_f1 vs knn_auto [95%] |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| knn_auto | 0.598 ± 0.024 | 0.665 ± 0.016 | 0.672 ± 0.016 | 0.589 ± 0.023 | [0.518, 0.652] | – | – | – |
+| ch_le2021 | 0.439 ± 0.020 | 0.530 ± 0.014 | 0.548 ± 0.013 | 0.429 ± 0.019 | [0.373, 0.497] | – | – | – |
+| eu_only | 0.422 ± 0.013 | 0.499 ± 0.012 | 0.498 ± 0.013 | 0.402 ± 0.012 | [0.331, 0.498] | -0.017 [-0.121, +0.087] | – | – |
+| pooled | 0.497 ± 0.015 | 0.568 ± 0.012 | 0.580 ± 0.013 | 0.468 ± 0.015 | [0.415, 0.555] | +0.058 [-0.005, +0.122] | – | – |
+| pooled_full | 0.596 ± 0.024 | 0.660 ± 0.014 | 0.671 ± 0.011 | 0.563 ± 0.023 | [0.507, 0.659] | +0.157 [+0.075, +0.237] | +0.024 [-0.023, +0.069] | -0.001 [-0.081, +0.083] |
+| pooled_full_prior | 0.616 ± 0.020 | 0.680 ± 0.010 | 0.684 ± 0.008 | 0.606 ± 0.019 | [0.541, 0.673] | +0.177 [+0.109, +0.243] | +0.044 [-0.008, +0.099] | +0.018 [-0.047, +0.084] |
 
 ### Per-observation benchmark (v1-v5)
 

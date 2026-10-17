@@ -498,11 +498,94 @@ def build_v6(results: Path) -> list[str]:
     return L
 
 
+V9_FORWARD = {
+    "forward_v9_beta": ("`beta_1y`, residual target: the models predict the future beta minus a base beta (OLS, "
+                        "Welch, Vasicek-shrunk Welch, or a mix with a size-group prior) and add the base back"),
+    "forward_v9_vol": ("`vol_1m` with new causal features (exponentially weighted vols, the same window one and two "
+                       "years earlier, month dummies, VIX and Euro Stoxx 50 vol), the HAR/GARCH set, and a stack "
+                       "(non-negative weights fitted on validation) of four arms"),
+}
+V9_STATIC = {
+    "static_v9_mcap": ("`log_mcap` with extra price/volume features (index-review volume spike, traded-value "
+                       "structure, SMI co-movement), several past month-ends per training stock (`*_md`, converted "
+                       "to today by the price ratio) and TabPFN v2 (untuned)", "log_mcap", ["r2", "mae"]),
+    "static_v9_sector": ("`sector` kNN with class-prior-corrected votes (`*_prior`) and exponentially "
+                         "time-weighted residual correlations (`*_ew`)", "sector", ["macro_f1", "weighted_f1",
+                                                                                  "accuracy", "balanced_accuracy"]),
+    "sector_eu": ("`sector` with European labelled stocks (data ≤ 2021-12-31, never evaluated) as extra kNN "
+                  "references. `ch_le2021` is the Swiss-only control in the same ≤ 2021 space; `pooled_full` uses "
+                  "full-history Swiss similarities plus Swiss-European ones; `knn_auto` is copied from "
+                  "`results/static_cv.csv`. This uses non-Swiss labels at prediction time (user decision "
+                  "2026-10-17) and is not part of the headline", "sector", ["macro_f1", "weighted_f1",
+                                                                            "accuracy", "balanced_accuracy"]),
+}
+
+
+def build_v9(results: Path) -> list[str]:
+    """v9 add-on experiments (own result files; headline unchanged). [] when no v9 file exists."""
+    names = [n for n in (*V9_FORWARD, *V9_STATIC) if (results / f"{n}.csv").exists()]
+    if not names:
+        return []
+    L = ["### v9 add-on experiments", "",
+         "Each idea comes from a probe round (validation / training folds only) and was then run once under the "
+         "protocols above. Forward files: every choice on validation, test read once, ★ = arm chosen on "
+         "validation, Δ with a 95% stock-block bootstrap interval. Static files: same repeated CV as the headline, "
+         "Δ = paired difference to the named reference (same folds), 95% stock-bootstrap interval.", ""]
+    for name, what in V9_FORWARD.items():
+        f = results / f"{name}.csv"
+        if not f.exists():
+            continue
+        fw = pd.read_csv(f)
+        refs = sorted((m[len("delta_r2_vs_"):] for m in dict.fromkeys(fw["metric"]) if m.startswith("delta_r2_vs_")),
+                      key=lambda r: r != "linear_fe")
+        L += [f"{what}. Source: `results/{name}.csv`.", "",
+              "| Arm | Val R² | Test R² | " + " | ".join(f"Test Δ vs {r} [95%]" for r in refs) + " |",
+              "|---|---:|---:|" + "|".join(["---:"] * len(refs)) + "|"]
+        for mod in dict.fromkeys(fw["model"]):
+            r = fw[fw.model == mod]
+            g = lambda sp, me: r[(r.split == sp) & (r.metric == me)]  # noqa: E731
+            vr, tr = g("val", "r2"), g("test", "r2")
+            if vr.empty or tr.empty:
+                continue
+            cells = []
+            for ref in refs:
+                dl = g("test", f"delta_r2_vs_{ref}")
+                cells.append(f"{dl['value'].iloc[0]:+.3f} [{dl['ci_lo'].iloc[0]:+.3f}, {dl['ci_hi'].iloc[0]:+.3f}]"
+                             if not dl.empty else "–")
+            star = " ★" if int(r["selected"].max()) == 1 else ""
+            L.append(f"| {mod}{star} | {vr['value'].iloc[0]:.3f} | {tr['value'].iloc[0]:.3f} | " + " | ".join(cells) + " |")
+        L.append("")
+    for name, (what, _t, cols) in V9_STATIC.items():
+        f = results / f"{name}.csv"
+        if not f.exists():
+            continue
+        d = pd.read_csv(f)
+        main = cols[0]
+        refs = [m[len(f"delta_{main}_vs_"):] for m in dict.fromkeys(d["metric"]) if m.startswith(f"delta_{main}_vs_")]
+        n = int(d["n_stocks"].iloc[0])
+        L += [f"{what} ({n} stocks). Source: `results/{name}.csv`.", "",
+              "| Model | " + " | ".join(cols) + f" | {main} 95% interval | "
+              + " | ".join(f"Δ {main} vs {r} [95%]" for r in refs) + " |",
+              "|---|" + "|".join(["---:"] * (len(cols) + 1 + len(refs))) + "|"]
+        for mod in dict.fromkeys(d["model"]):
+            r = d[d.model == mod].set_index("metric")
+            cells = [f"{r.loc[c, 'mean']:.3f} ± {r.loc[c, 'sd']:.3f}" if c in r.index else "n/a" for c in cols]
+            ci = (f"[{r.loc[main, 'ci_lo']:.3f}, {r.loc[main, 'ci_hi']:.3f}]" if main in r.index else "n/a")
+            ds = []
+            for ref in refs:
+                k = f"delta_{main}_vs_{ref}"
+                ds.append(f"{r.loc[k, 'mean']:+.3f} [{r.loc[k, 'ci_lo']:+.3f}, {r.loc[k, 'ci_hi']:+.3f}]"
+                          if k in r.index else "–")
+            L.append(f"| {mod} | " + " | ".join(cells) + f" | {ci} | " + " | ".join(ds) + " |")
+        L.append("")
+    return L
+
+
 def build_block(results: Path) -> str:
     m = pd.read_csv(results / "metrics.csv")
     test = m[m["split"] == "test"]
 
-    v6 = build_v6(results)
+    v6 = build_v6(results) + build_v9(results)
     lines = v6 + (["### Per-observation benchmark (v1-v5)", ""] if v6 else []) + [
         "Test split (time targets: observations from 2024-01-01 on; grouped targets: held-out tickers). "
         "Main metric: R² for the four regression targets (on the log scale for `vol_1m`, `log_mcap`, "

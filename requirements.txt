@@ -7,3 +7,4 @@ shap
 matplotlib
 pyarrow
 torch
+tabpfn==9.2.0

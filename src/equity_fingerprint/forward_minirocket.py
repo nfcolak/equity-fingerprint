@@ -151,7 +151,8 @@ def best_alpha(path: RidgePath, Pva, yva):
 
 
 # --------------------------------------------------------------------------- one target
-def run_target(panel, time_df, target: str, log=print):
+def run_target(panel, time_df, target: str, log=print, preds_out=None):
+    """One target. ``preds_out`` (dict, optional) receives ``arm -> (val_pred, test_pred, val_index, test_index)``."""
     d = target_frame(time_df, target).reset_index(drop=True)
     tr, va, te = (d[d["split"] == s] for s in ("train", "val", "test"))
     ytr, yva, yte = (x[target].to_numpy() for x in (tr, va, te))
@@ -219,6 +220,9 @@ def run_target(panel, time_df, target: str, log=print):
     w = choose_weight(yva, preds["ridge_mrfe"][0], preds[REF][0])  # validation only
     preds["avg_mrfe"] = tuple(w * preds["ridge_mrfe"][i] + (1 - w) * preds[REF][i] for i in (0, 1))
     info["avg_mrfe"] = {"weight_mrfe": w}
+    if preds_out is not None:
+        for m_, (pv, pt) in preds.items():
+            preds_out[m_] = (pv, pt, va.index, te.index)
 
     feats = {REF: "fe", "ridge_mr": "mr", "ridge_mrfe": "mrfe", "lgbm_femrpca": "femrpca", "avg_mrfe": "mrfe"}
     val_r2 = {m_: r2(yva, p[0]) for m_, p in preds.items()}

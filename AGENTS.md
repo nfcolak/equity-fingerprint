@@ -7,7 +7,7 @@ Inferring equity metadata from market data. Predict five characteristics of Swis
 | Item | Value |
 |---|---|
 | Language | Python 3.12, project venv `.venv/` (run with `env -u PYTHONPATH .venv/bin/python`) |
-| Libraries | pandas, numpy, scikit-learn, LightGBM, SHAP, matplotlib, pyarrow, yfinance |
+| Libraries | pandas, numpy, scikit-learn, LightGBM, SHAP, matplotlib, pyarrow, yfinance, torch, tabpfn 9.2.0 (v9 `tabpfn_mcap.py` only, public v2 checkpoint `data/models/tabpfn-v2-regressor.ckpt` or `EF_TABPFN_CKPT`; never import it together with lightgbm) |
 | Code | `src/equity_fingerprint/` (package), entry points run as `python -m equity_fingerprint.<module>` with `PYTHONPATH=src` |
 
 ## Data sources (all free)
@@ -16,6 +16,7 @@ Inferring equity metadata from market data. Predict five characteristics of Swis
 |---|---|
 | SIX issuer list `https://www.six-group.com/sheldon/equity_issuers/v1/equity_issuers.csv` (`;`-separated, latin-1) | Universe: rows with `Primary listing == TRUE`; yfinance ticker = `<Symbol>.SW` |
 | yfinance daily OHLCV | Stock prices/volume; market index `^SSHI` (SPI, from 2013-03) and `^SSMI` (SMI) |
+| yfinance `^VIX`, `^STOXX50E` closes | v9 vol_1m features only: `data/raw/extra_index.parquet` via `python -m equity_fingerprint.extra_market` |
 | yfinance `Ticker.info` snapshot | Labels: `sector`, `industry`, `sharesOutstanding`, `marketCap` |
 | Free index constituent lists (Wikipedia: S&P 500/400/600, FTSE 100/250, DAX/MDAX/SDAX, CAC 40/SBF 120, AEX/AMX, IBEX 35, FTSE MIB, OMX 30/25, OBX, BEL 20, ATX, PSI) + yfinance | v4 pretraining universe only (non-Swiss stocks): `data/pretrain/` (override `EF_PRETRAIN_DIR`) |
 
@@ -51,6 +52,7 @@ yfinance is unofficial and for personal/research use. The universe is today's li
 | Headline protocol (v6, user decision 2026-10-17): static targets (`sector`, `log_mcap`) are scored one row per stock with repeated stratified 5-fold CV over all eligible stocks (10 repeats, inner CV for hyper-parameters, stock-bootstrap intervals); forward targets are reported against a persistence model and their split-half measurement reliability (`static_cv.py`, `ceilings.py`; the reliability is not an attainable bound, so no "share of ceiling"). Intervals bootstrap stocks for the repeat-averaged metric. Sector correlation matrices may use all stocks' unlabeled returns (market-adjusted: `knn_resid`, `knn_auto`); labels only from training folds. Forward-target add-on experiments live in their own result files (`forward_v7.py`, `forward_kalman.py`, `forward_minirocket.py` → `results/forward_*.csv`), selected on validation, test read once. v4/v5 rows need `EF_FP_DIR` (Kaggle fingerprint outputs). The per-observation v1-v5 benchmark stays unchanged below it. | The 32-stock test split had seed noise (±0.05) larger than every effect tried; scores need a ceiling to be read. |
 | Every result number in README comes from a committed file under `results/`. Never invent or round-trip numbers by hand. | Evidence. |
 | Downloading the free data above and training on CPU is approved (user decision 2026-10-09). Raw/processed data stays git-ignored under `data/`. | User approval. |
+| v9 European sector references (user decision 2026-10-17, option 5): `sector_eu.py` may use non-Swiss, non-US stocks from `data/pretrain/` (data ≤ 2021-12-31, never a `.SW` ticker) as labelled kNN references for Swiss query stocks. They are never evaluated, and the result lives only in `results/sector_eu.csv`; every other row stays Swiss-label-only. v9 add-on files: `forward_v9_beta.csv`, `forward_v9_vol.csv`, `static_v9_mcap.csv`, `static_v9_sector.csv`, `sector_eu.csv`. | The user approved all five improvement options ("hepsini"); the cross-market idea is kept apart so the headline stays a Swiss-only benchmark. |
 | No notes in this repo: only `AGENTS.md` and `README.md`. Plans, reports and decisions go to ProjectOS `10-Projects/equity-fingerprint/`, rules to Jev-Mem `Notes/equity-fingerprint/`. | User rule. |
 
 ## Commands (from repo root)
