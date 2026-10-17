@@ -465,26 +465,36 @@ def build_v6(results: Path) -> list[str]:
             L.append(f"| `{t}` | {best} | {r2:.3f} | {pr:.3f} | {(r2 - pr) / (1 - pr):.2f} | {rel:.3f} |")
         L += ["", "`liquidity_1m` is almost fully explained by last month's traded value, so it is reported but is not a "
                   "headline result.", ""]
-    fw_p = results / "forward_v7.csv"
-    if fw_p.exists():
-        fw = pd.read_csv(fw_p)
-        fw = fw[fw.target == "beta_1y"]
-        L += ["`beta_1y` with Welch slope-winsorised betas (stock return clipped to [-2m, 4m] around the market "
-              "return m, 252-day and age-decayed) and linear/LightGBM averages (weight chosen on validation). "
-              "The arm marked ★ was chosen on validation before test was read; Δ is test R² minus `linear_fe` with a "
-              "95% stock-block bootstrap interval. Source: `results/forward_v7.csv`.", "",
-              "| Arm | Val R² | Test R² | Test Δ vs linear_fe | 95% interval |", "|---|---:|---:|---:|---:|"]
-        for mod in dict.fromkeys(fw["model"]):
-            r = fw[fw.model == mod]
-            g = lambda sp, me: r[(r.split == sp) & (r.metric == me)]
-            vr, tr, dl = g("val", "r2"), g("test", "r2"), g("test", "delta_r2_vs_linear_fe")
-            if vr.empty or tr.empty:
-                continue
-            star = " ★" if int(r["selected"].max()) == 1 else ""
-            d = (f"{dl['value'].iloc[0]:+.3f} | [{dl['ci_lo'].iloc[0]:+.3f}, {dl['ci_hi'].iloc[0]:+.3f}]"
-                 if not dl.empty else "– | –")
-            L.append(f"| {mod}{star} | {vr['value'].iloc[0]:.3f} | {tr['value'].iloc[0]:.3f} | {d} |")
-        L.append("")
+    intro = {
+        "forward_v7": "Welch slope-winsorised betas (stock return clipped to [-2m, 4m] around the market return m, "
+                      "252-day and age-decayed) and linear/LightGBM averages",
+        "forward_kalman": "a filtered random-walk Kalman beta (noise ratio chosen by train-period likelihood), alone "
+                          "and with the Welch betas",
+        "forward_minirocket": "MiniRocket features (84 fixed convolution kernels over the past 252 days of stock "
+                              "return, market return and traded value; biases fitted on training windows) with "
+                              "ridge, alone and with the engineered features",
+    }
+    for name, what in intro.items():
+        f = results / f"{name}.csv"
+        if not f.exists():
+            continue
+        fw = pd.read_csv(f)
+        for t in dict.fromkeys(fw["target"]):
+            L += [f"`{t}` with {what}. The arm marked ★ was chosen on validation before test was read; Δ is test R² "
+                  f"minus `linear_fe` with a 95% stock-block bootstrap interval. Source: `results/{name}.csv`.", "",
+                  "| Arm | Val R² | Test R² | Test Δ vs linear_fe | 95% interval |", "|---|---:|---:|---:|---:|"]
+            ft = fw[fw.target == t]
+            for mod in dict.fromkeys(ft["model"]):
+                r = ft[ft.model == mod]
+                g = lambda sp, me: r[(r.split == sp) & (r.metric == me)]
+                vr, tr, dl = g("val", "r2"), g("test", "r2"), g("test", "delta_r2_vs_linear_fe")
+                if vr.empty or tr.empty:
+                    continue
+                star = " ★" if int(r["selected"].max()) == 1 else ""
+                d = (f"{dl['value'].iloc[0]:+.3f} | [{dl['ci_lo'].iloc[0]:+.3f}, {dl['ci_hi'].iloc[0]:+.3f}]"
+                     if not dl.empty else "– | –")
+                L.append(f"| {mod}{star} | {vr['value'].iloc[0]:.3f} | {tr['value'].iloc[0]:.3f} | {d} |")
+            L.append("")
     return L
 
 

@@ -64,6 +64,7 @@ class BuildV6Test(unittest.TestCase):
             pd.DataFrame(rows).to_csv(d / "forward_v7.csv", index=False)
             text = "\n".join(report.build_v6(d))
             self.assertIn("| linear_fe | 0.660 | 0.630 | – | – |", text)
+            self.assertIn("Source: `results/forward_v7.csv`", text)
             self.assertIn("| avg_fewelch ★ | 0.674 | 0.645 | +0.013 | [-0.001, +0.025] |", text)
 
 

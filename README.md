@@ -77,7 +77,7 @@ Forward targets on the test split, read against two references: a persistence mo
 
 `liquidity_1m` is almost fully explained by last month's traded value, so it is reported but is not a headline result.
 
-`beta_1y` with Welch slope-winsorised betas (stock return clipped to [-2m, 4m] around the market return m, 252-day and age-decayed) and linear/LightGBM averages (weight chosen on validation). The arm marked ★ was chosen on validation before test was read; Δ is test R² minus `linear_fe` with a 95% stock-block bootstrap interval. Source: `results/forward_v7.csv`.
+`beta_1y` with Welch slope-winsorised betas (stock return clipped to [-2m, 4m] around the market return m, 252-day and age-decayed) and linear/LightGBM averages. The arm marked ★ was chosen on validation before test was read; Δ is test R² minus `linear_fe` with a 95% stock-block bootstrap interval. Source: `results/forward_v7.csv`.
 
 | Arm | Val R² | Test R² | Test Δ vs linear_fe | 95% interval |
 |---|---:|---:|---:|---:|
@@ -87,6 +87,40 @@ Forward targets on the test split, read against two references: a persistence mo
 | linear_fewelch | 0.670 | 0.639 | +0.007 | [-0.004, +0.019] |
 | lgbm_fewelch | 0.659 | 0.624 | -0.008 | [-0.035, +0.019] |
 | avg_fewelch ★ | 0.674 | 0.645 | +0.013 | [-0.001, +0.025] |
+
+`beta_1y` with a filtered random-walk Kalman beta (noise ratio chosen by train-period likelihood), alone and with the Welch betas. The arm marked ★ was chosen on validation before test was read; Δ is test R² minus `linear_fe` with a 95% stock-block bootstrap interval. Source: `results/forward_kalman.csv`.
+
+| Arm | Val R² | Test R² | Test Δ vs linear_fe | 95% interval |
+|---|---:|---:|---:|---:|
+| linear_fe | 0.662 | 0.632 | – | – |
+| lgbm_fe | 0.659 | 0.603 | -0.029 | [-0.063, +0.002] |
+| avg_fewelch | 0.674 | 0.645 | +0.013 | [-0.001, +0.025] |
+| linear_fekalman | 0.666 | 0.630 | -0.001 | [-0.008, +0.004] |
+| lgbm_fekalman | 0.685 | 0.600 | -0.032 | [-0.064, -0.002] |
+| avg_fekalman ★ | 0.688 | 0.619 | -0.013 | [-0.036, +0.010] |
+| linear_fewelchkalman | 0.673 | 0.639 | +0.007 | [-0.007, +0.020] |
+| lgbm_fewelchkalman | 0.676 | 0.611 | -0.021 | [-0.047, +0.007] |
+| avg_fewelchkalman | 0.684 | 0.638 | +0.006 | [-0.011, +0.024] |
+
+`vol_1m` with MiniRocket features (84 fixed convolution kernels over the past 252 days of stock return, market return and traded value; biases fitted on training windows) with ridge, alone and with the engineered features. The arm marked ★ was chosen on validation before test was read; Δ is test R² minus `linear_fe` with a 95% stock-block bootstrap interval. Source: `results/forward_minirocket.csv`.
+
+| Arm | Val R² | Test R² | Test Δ vs linear_fe | 95% interval |
+|---|---:|---:|---:|---:|
+| linear_fe | 0.629 | 0.609 | – | – |
+| ridge_mr | 0.605 | 0.617 | +0.009 | [-0.003, +0.022] |
+| ridge_mrfe ★ | 0.646 | 0.630 | +0.021 | [+0.016, +0.027] |
+| lgbm_femrpca | 0.639 | 0.627 | +0.018 | [+0.010, +0.028] |
+| avg_mrfe | 0.646 | 0.630 | +0.021 | [+0.016, +0.027] |
+
+`beta_1y` with MiniRocket features (84 fixed convolution kernels over the past 252 days of stock return, market return and traded value; biases fitted on training windows) with ridge, alone and with the engineered features. The arm marked ★ was chosen on validation before test was read; Δ is test R² minus `linear_fe` with a 95% stock-block bootstrap interval. Source: `results/forward_minirocket.csv`.
+
+| Arm | Val R² | Test R² | Test Δ vs linear_fe | 95% interval |
+|---|---:|---:|---:|---:|
+| linear_fe | 0.662 | 0.632 | – | – |
+| ridge_mr | 0.569 | 0.566 | -0.066 | [-0.112, -0.015] |
+| ridge_mrfe ★ | 0.676 | 0.653 | +0.021 | [+0.001, +0.045] |
+| lgbm_femrpca | 0.669 | 0.627 | -0.005 | [-0.031, +0.020] |
+| avg_mrfe | 0.676 | 0.653 | +0.021 | [+0.001, +0.045] |
 
 ### Per-observation benchmark (v1-v5)
 
@@ -319,6 +353,7 @@ All metrics (validation and test, MAE/RMSE/QLIKE, accuracy, log loss): [`results
 - Principal components for the grouped targets are fitted on training tickers, whose own returns enter their PC factors; held-out tickers' loadings do not have that self-contribution.
 - `vol_1m` windows with zero realized volatility are dropped (count in `results/run_info.json`). QLIKE for `vol_1m` uses the log-normal mean variance forecast `exp(2·pred + 2·s²)` with `s²` the validation residual variance.
 - The v4/v5 rows need the Kaggle fingerprint outputs: set `EF_FP_DIR` to the folder with `fp_embeddings_*.parquet`, `fp_comove_*.parquet` and the `fpnet*` prediction files before `run`; without it `run` silently writes the v1-v3 rows only.
+- The v7/v8 add-on experiments (Welch beta, Kalman beta, MiniRocket) compare each arm with `linear_fe` only and were run after many earlier arms on the same validation and test periods, so a small test gain can partly be selection luck. Against the best earlier model chosen on validation, MiniRocket + engineered features ties for `vol_1m` and scores higher on test for `beta_1y`, where `fpnet_a` keeps the higher validation score; the Kalman beta does not help.
 - Best-by-validation choices carry a winner's-curse margin: in the 2026-10-17 review a +0.010 validation gain for `vol_1m` shrank to +0.002 on test, so the +0.007 `vol_1m` gap between v4 and v1-v3 is within noise.
 
 ## How to run
