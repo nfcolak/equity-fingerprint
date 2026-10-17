@@ -6,9 +6,11 @@ by split-half reliability: the forward window's days are split into odd and even
 statistic is computed on each half exactly as in `targets.forward_targets`, and the correlation r of the two
 halves across observations is Spearman-Brown corrected: reliability = 2r / (1 + r).
 
-Reliability is an UPPER BOUND on the R² a model can reach (it assumes a perfect forecast of the true future
-value). Forward-filled zero-return days of illiquid stocks can make the two halves look more alike than
-independent noise would, so the bound may be slightly high for those stocks.
+Read the result as a measurement reliability of the target, not as an attainable forecasting bound: the two
+halves share the same window, so shocks inside the window that are unknowable at the forecast date count as
+signal. It depends on how the window is split (odd/even days vs first/second half gave vol_1m 0.807 vs 0.699 on
+test in the 2026-10-17 review). Windows that contain zero-volume days have a LOWER reliability (vol_1m 0.670 vs
+0.848 without), so forward-filled days do not inflate it.
 
 The persistence baseline is a one-feature OLS fitted on TRAIN rows only (vol_1m <- log(max(vol_21, floor)),
 beta_1y <- beta_252, liquidity_1m <- log_tv_21), scored by R² on val and test; the no-fit identity

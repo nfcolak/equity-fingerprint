@@ -41,8 +41,30 @@ class BuildV6Test(unittest.TestCase):
             self.assertIn("| knn | 0.500 ± 0.020", text)
             self.assertIn("[0.400, 0.600]", text)
             self.assertIn("| ridge | 0.900 ± 0.010", text)
-            # best by validation is linear_fe (val 0.5), test 0.6; share 0.6/0.8 = 75%; skill (0.6-0.4)/0.6 = 0.33
-            self.assertIn("| `vol_1m` | linear_fe | 0.600 | 0.400 | 0.800 | 75% | 0.33 |", text)
+            # best by validation is linear_fe (val 0.5), test 0.6; skill (0.6-0.4)/0.6 = 0.33; reliability 0.8
+            self.assertIn("| `vol_1m` | linear_fe | 0.600 | 0.400 | 0.33 | 0.800 |", text)
+
+    def test_forward_v7_table(self):
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t)
+            _metrics(d)
+            pd.DataFrame([dict(target="vol_1m", split="test", n_obs=10, split_half_r=0.6, reliability=0.8,
+                               persistence_ols_r2=0.4, persistence_identity_r2=0.3, persistence_feature="x")]
+                         ).to_csv(d / "ceilings.csv", index=False)
+            rows = [dict(target="beta_1y", model="linear_fe", features="fe", split="val", metric="r2", value=0.66,
+                         n_obs=5, ci_lo=None, ci_hi=None, selected=0),
+                    dict(target="beta_1y", model="linear_fe", features="fe", split="test", metric="r2", value=0.63,
+                         n_obs=5, ci_lo=None, ci_hi=None, selected=0),
+                    dict(target="beta_1y", model="avg_fewelch", features="fewelch", split="val", metric="r2",
+                         value=0.674, n_obs=5, ci_lo=None, ci_hi=None, selected=1),
+                    dict(target="beta_1y", model="avg_fewelch", features="fewelch", split="test", metric="r2",
+                         value=0.645, n_obs=5, ci_lo=None, ci_hi=None, selected=1),
+                    dict(target="beta_1y", model="avg_fewelch", features="fewelch", split="test",
+                         metric="delta_r2_vs_linear_fe", value=0.013, n_obs=5, ci_lo=-0.001, ci_hi=0.025, selected=1)]
+            pd.DataFrame(rows).to_csv(d / "forward_v7.csv", index=False)
+            text = "\n".join(report.build_v6(d))
+            self.assertIn("| linear_fe | 0.660 | 0.630 | – | – |", text)
+            self.assertIn("| avg_fewelch ★ | 0.674 | 0.645 | +0.013 | [-0.001, +0.025] |", text)
 
 
 if __name__ == "__main__":

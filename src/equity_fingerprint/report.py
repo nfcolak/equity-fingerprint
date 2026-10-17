@@ -417,9 +417,13 @@ def build_v6(results: Path) -> list[str]:
         sc = pd.read_csv(sc_p)
         L += ["Static targets, one row per stock: repeated stratified 5-fold cross-validation over all eligible Swiss "
               "stocks (10 repeats), hyper-parameters by inner CV on the training folds only. Mean ± sd over repeats; "
-              "95% interval from a stock bootstrap of repeat 0. `sector` uses each stock's full daily price history; "
-              "`log_mcap` is close × today's share count at the latest month-end (no historical share-count bias). "
-              "Source: `results/static_cv.csv`.", ""]
+              "95% interval from a stock bootstrap of the repeat-averaged metric. `sector` uses each stock's full daily "
+              "price history; Utilities (4 stocks) is dropped because classes need at least 5 stocks. `knn` uses raw "
+              "return correlations, `knn_resid` correlations of returns after removing the SPI market return, "
+              "`knn_auto` lets inner CV choose among six market-adjusted correlation matrices and k (matrices use "
+              "returns only, never labels). `log_mcap` is close × today's share count at the latest month-end (no "
+              "historical share-count bias); `ridge_logtv21` uses only the 21-day traded value, which carries most "
+              "of the signal. Source: `results/static_cv.csv`.", ""]
         for t, cols in (("sector", ["macro_f1", "weighted_f1", "accuracy", "balanced_accuracy"]), ("log_mcap", ["r2", "mae"])):
             d = sc[sc.target == t]
             if d.empty:
@@ -442,11 +446,12 @@ def build_v6(results: Path) -> list[str]:
         L += ["Forward targets on the test split, read against two references: a persistence model (one feature, OLS "
               "fitted on train: past 21-day log vol, past 252-day beta, past 21-day log traded value) and the split-half "
               "reliability of the target (odd vs even days of the forward window, Spearman-Brown corrected). The "
-              "reliability is an upper bound: it assumes a perfect forecast of the true future value. Best model = "
+              "reliability describes how noisy the target measurement is; it is not an attainable forecasting bound, "
+              "because both halves share shocks that are unknowable at the forecast date. Best model = "
               "highest validation R² over all model rows. Skill = (R² − persistence R²) / (1 − persistence R²). "
               "Source: `results/ceilings.csv`, `results/metrics.csv`.", "",
-              "| Target | Best model (by validation) | Test R² | Persistence R² | Reliability ceiling | Share of ceiling | Skill over persistence |",
-              "|---|---|---:|---:|---:|---:|---:|"]
+              "| Target | Best model (by validation) | Test R² | Persistence R² | Skill over persistence | Measurement reliability |",
+              "|---|---|---:|---:|---:|---:|"]
         for t in ("vol_1m", "beta_1y", "liquidity_1m"):
             v = m[(m.target == t) & (m.split == "val") & (m.metric == "r2") & (m.model != "baseline")]
             c = ce[(ce.target == t) & (ce.split == "test")]
@@ -457,9 +462,29 @@ def build_v6(results: Path) -> list[str]:
             if r2 is None:
                 continue
             pr, rel = float(c["persistence_ols_r2"].iloc[0]), float(c["reliability"].iloc[0])
-            L.append(f"| `{t}` | {best} | {r2:.3f} | {pr:.3f} | {rel:.3f} | {r2 / rel:.0%} | {(r2 - pr) / (1 - pr):.2f} |")
+            L.append(f"| `{t}` | {best} | {r2:.3f} | {pr:.3f} | {(r2 - pr) / (1 - pr):.2f} | {rel:.3f} |")
         L += ["", "`liquidity_1m` is almost fully explained by last month's traded value, so it is reported but is not a "
                   "headline result.", ""]
+    fw_p = results / "forward_v7.csv"
+    if fw_p.exists():
+        fw = pd.read_csv(fw_p)
+        fw = fw[fw.target == "beta_1y"]
+        L += ["`beta_1y` with Welch slope-winsorised betas (stock return clipped to [-2m, 4m] around the market "
+              "return m, 252-day and age-decayed) and linear/LightGBM averages (weight chosen on validation). "
+              "The arm marked ★ was chosen on validation before test was read; Δ is test R² minus `linear_fe` with a "
+              "95% stock-block bootstrap interval. Source: `results/forward_v7.csv`.", "",
+              "| Arm | Val R² | Test R² | Test Δ vs linear_fe | 95% interval |", "|---|---:|---:|---:|---:|"]
+        for mod in dict.fromkeys(fw["model"]):
+            r = fw[fw.model == mod]
+            g = lambda sp, me: r[(r.split == sp) & (r.metric == me)]
+            vr, tr, dl = g("val", "r2"), g("test", "r2"), g("test", "delta_r2_vs_linear_fe")
+            if vr.empty or tr.empty:
+                continue
+            star = " ★" if int(r["selected"].max()) == 1 else ""
+            d = (f"{dl['value'].iloc[0]:+.3f} | [{dl['ci_lo'].iloc[0]:+.3f}, {dl['ci_hi'].iloc[0]:+.3f}]"
+                 if not dl.empty else "– | –")
+            L.append(f"| {mod}{star} | {vr['value'].iloc[0]:.3f} | {tr['value'].iloc[0]:.3f} | {d} |")
+        L.append("")
     return L
 
 

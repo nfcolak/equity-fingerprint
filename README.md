@@ -2,7 +2,7 @@
 
 A stock's daily price and volume history is a fingerprint: how much it moves, how it co-moves with the market and with other stocks, how much it trades. This project asks how much of a Swiss stock's metadata can be read back from that fingerprint alone: its future volatility, beta, liquidity, its market capitalisation and its sector. It compares a deliberately simple feature set against an engineered one, with a linear model and a gradient boosted tree model, under a leakage-controlled time / ticker split.
 
-How to read the results: the headline section scores the static targets (`sector`, `log_mcap`) once per stock with repeated cross-validation over all Swiss stocks, and reads the forward targets (`vol_1m`, `beta_1y`, `liquidity_1m`) against a persistence model and the target's own noise ceiling. The per-observation benchmark of v1-v5, including the self-supervised fingerprint encoder (v4, v5), follows below it unchanged; the encoder did not beat the engineered features beyond noise. A scope check (2026-10-17) found that sector accuracy is limited mainly by the number of Swiss stocks: the same simple method scores clearly higher on thousands of US stocks and drops to the Swiss level when trained on as few stocks.
+How to read the results: the headline section scores the static targets (`sector`, `log_mcap`) once per stock with repeated cross-validation over all Swiss stocks, and reads the forward targets (`vol_1m`, `beta_1y`, `liquidity_1m`) against a persistence model and the target's own noise ceiling. The per-observation benchmark of v1-v5, including the self-supervised fingerprint encoder (v4, v5), follows below it unchanged; the encoder did not beat the engineered features beyond noise. An internal scope check (2026-10-17, not part of `results/`) found that sector accuracy is limited mainly by the number of Swiss stocks: the same simple method scores clearly higher on thousands of US stocks and drops to the Swiss level when trained on as few stocks.
 
 ## Data
 
@@ -23,7 +23,7 @@ How to read the results: the headline section scores the static targets (`sector
 
 ## Method
 
-Observations: one per (ticker, month-end trading date) from 2014-03 on, requiring at least 252 prior trading rows. Features use data up to and including the feature date only.
+Observations: one per (ticker, month-end trading date) from 2014-03 on, requiring at least 252 prior trading rows. Features use price and volume data up to and including the feature date only. Three fitted objects are estimated once on all training-period data (≤ 2021-12-31): the return principal components, the GJR-GARCH parameters and the v3 return-embedding basis; validation and test rows are out of sample for them, early training rows are not strictly so.
 
 Feature sets:
 
@@ -44,35 +44,49 @@ Leakage controls: features see only data up to the feature date, targets only la
 <!-- results:start -->
 ### Headline (v6 protocol)
 
-Static targets, one row per stock: repeated stratified 5-fold cross-validation over all eligible Swiss stocks (10 repeats), hyper-parameters by inner CV on the training folds only. Mean ± sd over repeats; 95% interval from a stock bootstrap of repeat 0. `sector` uses each stock's full daily price history; `log_mcap` is close × today's share count at the latest month-end (no historical share-count bias). Source: `results/static_cv.csv`.
+Static targets, one row per stock: repeated stratified 5-fold cross-validation over all eligible Swiss stocks (10 repeats), hyper-parameters by inner CV on the training folds only. Mean ± sd over repeats; 95% interval from a stock bootstrap of the repeat-averaged metric. `sector` uses each stock's full daily price history; Utilities (4 stocks) is dropped because classes need at least 5 stocks. `knn` uses raw return correlations, `knn_resid` correlations of returns after removing the SPI market return, `knn_auto` lets inner CV choose among six market-adjusted correlation matrices and k (matrices use returns only, never labels). `log_mcap` is close × today's share count at the latest month-end (no historical share-count bias); `ridge_logtv21` uses only the 21-day traded value, which carries most of the signal. Source: `results/static_cv.csv`.
 
 `sector` (203 stocks, 9 classes):
 
 | Model | macro_f1 | weighted_f1 | accuracy | balanced_accuracy | macro_f1 95% interval |
 |---|---:|---:|---:|---:|---:|
 | baseline | 0.044 ± 0.000 | 0.097 ± 0.000 | 0.246 ± 0.000 | 0.111 ± 0.000 | [0.035, 0.052] |
-| knn | 0.471 ± 0.025 | 0.563 ± 0.016 | 0.589 ± 0.015 | 0.441 ± 0.020 | [0.392, 0.571] |
-| prof_logit | 0.428 ± 0.024 | 0.569 ± 0.019 | 0.624 ± 0.015 | 0.440 ± 0.016 | [0.393, 0.516] |
-| femean_logit | 0.276 ± 0.024 | 0.377 ± 0.026 | 0.395 ± 0.027 | 0.280 ± 0.022 | [0.226, 0.345] |
-| prof_femean_logit | 0.418 ± 0.021 | 0.552 ± 0.023 | 0.571 ± 0.028 | 0.425 ± 0.024 | [0.343, 0.471] |
+| knn | 0.471 ± 0.025 | 0.563 ± 0.016 | 0.589 ± 0.015 | 0.441 ± 0.020 | [0.394, 0.529] |
+| prof_logit | 0.428 ± 0.024 | 0.569 ± 0.019 | 0.624 ± 0.015 | 0.440 ± 0.016 | [0.379, 0.465] |
+| femean_logit | 0.276 ± 0.024 | 0.377 ± 0.026 | 0.395 ± 0.027 | 0.280 ± 0.022 | [0.225, 0.320] |
+| prof_femean_logit | 0.418 ± 0.021 | 0.552 ± 0.023 | 0.571 ± 0.028 | 0.425 ± 0.024 | [0.363, 0.461] |
+| knn_resid | 0.572 ± 0.024 | 0.643 ± 0.012 | 0.654 ± 0.010 | 0.551 ± 0.020 | [0.488, 0.633] |
+| knn_auto | 0.598 ± 0.024 | 0.665 ± 0.016 | 0.672 ± 0.016 | 0.589 ± 0.023 | [0.518, 0.652] |
 
 `log_mcap` (204 stocks):
 
 | Model | r2 | mae | r2 95% interval |
 |---|---:|---:|---:|
-| baseline | -0.011 ± 0.007 | 1.643 ± 0.007 | [-0.028, 0.000] |
-| ridge | 0.892 ± 0.005 | 0.506 ± 0.009 | [0.869, 0.920] |
-| lgbm | 0.886 ± 0.007 | 0.544 ± 0.018 | [0.855, 0.913] |
+| baseline | -0.011 ± 0.007 | 1.643 ± 0.007 | [-0.035, -0.009] |
+| ridge | 0.892 ± 0.005 | 0.506 ± 0.009 | [0.862, 0.916] |
+| ridge_logtv21 | 0.847 ± 0.002 | 0.613 ± 0.003 | [0.805, 0.878] |
+| lgbm | 0.886 ± 0.007 | 0.544 ± 0.018 | [0.854, 0.907] |
 
-Forward targets on the test split, read against two references: a persistence model (one feature, OLS fitted on train: past 21-day log vol, past 252-day beta, past 21-day log traded value) and the split-half reliability of the target (odd vs even days of the forward window, Spearman-Brown corrected). The reliability is an upper bound: it assumes a perfect forecast of the true future value. Best model = highest validation R² over all model rows. Skill = (R² − persistence R²) / (1 − persistence R²). Source: `results/ceilings.csv`, `results/metrics.csv`.
+Forward targets on the test split, read against two references: a persistence model (one feature, OLS fitted on train: past 21-day log vol, past 252-day beta, past 21-day log traded value) and the split-half reliability of the target (odd vs even days of the forward window, Spearman-Brown corrected). The reliability describes how noisy the target measurement is; it is not an attainable forecasting bound, because both halves share shocks that are unknowable at the forecast date. Best model = highest validation R² over all model rows. Skill = (R² − persistence R²) / (1 − persistence R²). Source: `results/ceilings.csv`, `results/metrics.csv`.
 
-| Target | Best model (by validation) | Test R² | Persistence R² | Reliability ceiling | Share of ceiling | Skill over persistence |
-|---|---|---:|---:|---:|---:|---:|
-| `vol_1m` | lgbm_fefpfa | 0.630 | 0.426 | 0.807 | 78% | 0.35 |
-| `beta_1y` | fpnet_a | 0.630 | 0.522 | 0.790 | 80% | 0.23 |
-| `liquidity_1m` | lgbm_fefpfa | 0.957 | 0.949 | 0.992 | 96% | 0.16 |
+| Target | Best model (by validation) | Test R² | Persistence R² | Skill over persistence | Measurement reliability |
+|---|---|---:|---:|---:|---:|
+| `vol_1m` | lgbm_fefpfa | 0.630 | 0.426 | 0.35 | 0.807 |
+| `beta_1y` | fpnet_a | 0.630 | 0.522 | 0.23 | 0.790 |
+| `liquidity_1m` | lgbm_fefpfa | 0.957 | 0.949 | 0.16 | 0.992 |
 
 `liquidity_1m` is almost fully explained by last month's traded value, so it is reported but is not a headline result.
+
+`beta_1y` with Welch slope-winsorised betas (stock return clipped to [-2m, 4m] around the market return m, 252-day and age-decayed) and linear/LightGBM averages (weight chosen on validation). The arm marked ★ was chosen on validation before test was read; Δ is test R² minus `linear_fe` with a 95% stock-block bootstrap interval. Source: `results/forward_v7.csv`.
+
+| Arm | Val R² | Test R² | Test Δ vs linear_fe | 95% interval |
+|---|---:|---:|---:|---:|
+| linear_fe | 0.662 | 0.632 | – | – |
+| lgbm_fe | 0.659 | 0.603 | -0.029 | [-0.063, +0.002] |
+| avg_fe | 0.672 | 0.635 | +0.003 | [-0.013, +0.018] |
+| linear_fewelch | 0.670 | 0.639 | +0.007 | [-0.004, +0.019] |
+| lgbm_fewelch | 0.659 | 0.624 | -0.008 | [-0.035, +0.019] |
+| avg_fewelch ★ | 0.674 | 0.645 | +0.013 | [-0.001, +0.025] |
 
 ### Per-observation benchmark (v1-v5)
 
@@ -304,7 +318,8 @@ All metrics (validation and test, MAE/RMSE/QLIKE, accuracy, log loss): [`results
 - Each ticker contributes many correlated monthly observations; the grouped-target test sets contain few tickers, so those scores are noisy. Sector metrics are observation-level, and the classes are imbalanced (hence macro-F1).
 - Principal components for the grouped targets are fitted on training tickers, whose own returns enter their PC factors; held-out tickers' loadings do not have that self-contribution.
 - `vol_1m` windows with zero realized volatility are dropped (count in `results/run_info.json`). QLIKE for `vol_1m` uses the log-normal mean variance forecast `exp(2·pred + 2·s²)` with `s²` the validation residual variance.
-- The v5 variants exist in code: pretraining with far contrastive positives (two views of the same stock at least a year apart) and a same-date comove-profile sector feature set; their benchmark rows will appear after the Kaggle pretraining run.
+- The v4/v5 rows need the Kaggle fingerprint outputs: set `EF_FP_DIR` to the folder with `fp_embeddings_*.parquet`, `fp_comove_*.parquet` and the `fpnet*` prediction files before `run`; without it `run` silently writes the v1-v3 rows only.
+- Best-by-validation choices carry a winner's-curse margin: in the 2026-10-17 review a +0.010 validation gain for `vol_1m` shrank to +0.002 on test, so the +0.007 `vol_1m` gap between v4 and v1-v3 is within noise.
 
 ## How to run
 
