@@ -1,11 +1,9 @@
-"""report.py v5 section: absent without v5 rows (v1-v4 text identical to HEAD), present with them.
+"""report.py v5 section: absent without v5 rows, present with them.
 
 Synthetic metrics.csv / robustness.csv / run_info.json in a temp dir; build functions called directly.
 Run: env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -p 'test_report_v5.py' -v
 """
-import importlib.util
 import json
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,7 +13,6 @@ import pandas as pd
 
 from equity_fingerprint import report
 
-ROOT = Path(__file__).resolve().parents[1]
 V14 = ["baseline", "linear_raw", "linear_fe", "linear_fe2", "linear_fe3", "lgbm_raw", "lgbm_fe", "lgbm_fe2", "lgbm_fe3",
        "linear_har", "lgbm_har", "linear_fp", "lgbm_fp", "linear_fpa", "lgbm_fpa", "lgbm_fefpa", "fpnet", "fpnet_a"]
 V5_ALL = ["linear_fpf", "lgbm_fpf", "linear_fpfa", "lgbm_fpfa", "lgbm_fefpfa"]
@@ -68,18 +65,6 @@ def write_results(d: Path, v5: bool) -> None:
     (d / "run_info.json").write_text(json.dumps(info))
 
 
-def head_report_module():
-    src = subprocess.run(["git", "show", "HEAD:src/equity_fingerprint/report.py"], cwd=ROOT, check=True,
-                         capture_output=True, text=True).stdout
-    with tempfile.TemporaryDirectory() as td:
-        p = Path(td) / "report_head.py"
-        p.write_text(src)
-        spec = importlib.util.spec_from_file_location("report_head", p)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-    return mod
-
-
 class ReportV5Test(unittest.TestCase):
     def test_without_v5_rows_unchanged(self):
         with tempfile.TemporaryDirectory() as td:
@@ -89,7 +74,6 @@ class ReportV5Test(unittest.TestCase):
             block = report.build_block(d)
             self.assertNotIn("### v5", block)
             self.assertIn("### v4", block)
-            self.assertEqual(block, head_report_module().build_block(d))
 
     def test_with_v5_rows_section_present(self):
         with tempfile.TemporaryDirectory() as td:

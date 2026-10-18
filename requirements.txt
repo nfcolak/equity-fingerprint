@@ -8,3 +8,6 @@ matplotlib
 pyarrow
 torch
 tabpfn==9.2.0
+scipy
+numba
+lxml

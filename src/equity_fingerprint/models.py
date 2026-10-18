@@ -1,7 +1,8 @@
 """Preprocessing, models and metrics.
 
 Models per target: baseline, linear_raw, linear_fe, lgbm_raw, lgbm_fe (+ linear_fe2, lgbm_fe2 for the
-grouped targets sector / log_mcap when ``fe2_cols`` is given).
+grouped targets sector / log_mcap when ``fe2_cols`` is given, and linear_<set> / lgbm_<set> for every feature
+set passed in ``extra_sets``: har, fe3, fp, fpa, fpprof ... in ``run.main``).
 Everything is fitted on train; hyper-parameters / early stopping use validation; test is scored once.
 """
 from __future__ import annotations

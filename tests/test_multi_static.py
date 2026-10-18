@@ -384,10 +384,10 @@ class PipelineTests(unittest.TestCase):
     def test_mcap_data_and_evaluation(self):
         tickers, region, y, X, groups, n_ch, log = ms.build_mcap_data(self.swiss, self.panels, self.table, self.universe)
         self.assertEqual(len(tickers), len(y))
-        self.assertEqual(list(X.columns), ms.FE_BASE_FEATURES + ["reg_EU"])
+        self.assertEqual(list(X.columns), F.FE_BASE_FEATURES + ["reg_EU"])
         self.assertEqual(set(region), {"CH", "EU"})
         np.testing.assert_array_equal(X["reg_EU"].to_numpy() == 1, region == "EU")
-        self.assertTrue(np.isfinite(y).all() and X[ms.FE_BASE_FEATURES].notna().all().all())
+        self.assertTrue(np.isfinite(y).all() and X[F.FE_BASE_FEATURES].notna().all().all())
         self.assertEqual(groups[0], groups[1])
         self.assertEqual(len(set(groups)), len(groups) - 2)
         rows, oofs = ms.evaluate_mcap(self.swiss, self.panels, self.table, self.universe, repeats=1, n_boot=20)

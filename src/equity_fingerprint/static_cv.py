@@ -24,7 +24,7 @@ sector
   metric (same resampled stocks in every repeat).
 log_mcap
   target = log(close x shares-outstanding snapshot) at the last month-end; features = FE_BASE_FEATURES
-  at that date (no PC loadings). KFold(5) x 10 repeats. models: mean, ridge (alpha by inner CV), ridge_logtv21 (ridge on log_tv_21 only), lgbm
+  at that date (no PC loadings). KFold(5) x 10 repeats. models: baseline (train mean), ridge (alpha by inner CV), ridge_logtv21 (ridge on log_tv_21 only), lgbm
   (300 trees, lr 0.05, num_leaves {4,8} x min_child_samples {10,20} by inner CV). Metrics r2, mae.
 
 Outputs (results/ by default): static_cv.csv, static_cv_oof.parquet (sector class names in y_true / y_pred,

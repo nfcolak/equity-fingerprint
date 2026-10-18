@@ -50,7 +50,6 @@ from sklearn.model_selection import StratifiedGroupKFold
 
 from . import data
 from . import multi_market as mm
-from .features import FE_BASE_FEATURES  # noqa: F401  (re-exported: tests/test_multi_static.py reads ms.FE_BASE_FEATURES)
 from .static_cv import (INNER_SEED, KNN_KS, N_BOOT, _inner_splits, _macro, _masked_sims,
                         bootstrap_ci_mean, class_metrics, fast_class_metrics, fast_reg_metrics, issuer_ids,
                         mcap_inputs, pairwise_corr, reg_metrics, resid_on, run_mcap_repeat, run_sector_repeat,

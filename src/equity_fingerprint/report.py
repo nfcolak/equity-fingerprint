@@ -455,8 +455,8 @@ def build_v6(results: Path) -> list[str]:
             if len(a) and len(b) and len(c) and len(e):
                 L += [f"Earlier headline (per-ticker folds, `results/static_cv.csv`): `knn_auto` macro-F1 "
                       f"{a.iloc[0]:.3f} (now {b.iloc[0]:.3f}), `ridge` R² {c.iloc[0]:.3f} (now {e.iloc[0]:.3f}). "
-                      "Per-ticker folds let a share line be predicted from its sibling line (return correlation "
-                      "0.82-0.94), so the grouped numbers are the honest ones.", ""]
+                      "Per-ticker folds let a share line be predicted from its highly correlated sibling line, "
+                      "so the grouped numbers are the honest ones.", ""]
         for t, cols in (("sector", ["macro_f1", "weighted_f1", "accuracy", "balanced_accuracy"]), ("log_mcap", ["r2", "mae"])):
             d = sc[sc.target == t]
             if d.empty:
@@ -498,7 +498,7 @@ def build_v6(results: Path) -> list[str]:
               "reliability of the target (odd vs even days of the forward window, Spearman-Brown corrected). The "
               "reliability describes how noisy the target measurement is; it is not an attainable forecasting bound, "
               "because both halves share shocks that are unknowable at the forecast date. Best model = "
-              "highest validation R² over all model rows. Skill = (R² − persistence R²) / (1 − persistence R²). "
+              "highest validation R² among the v1-v5 rows of `results/metrics.csv` (the add-on rounds below select separately). Skill = (R² − persistence R²) / (1 − persistence R²). "
               "Source: `results/ceilings.csv`, `results/metrics.csv`.", "",
               "| Target | Best model (by validation) | Test R² | Persistence R² | Skill over persistence | Measurement reliability |",
               "|---|---|---:|---:|---:|---:|"]

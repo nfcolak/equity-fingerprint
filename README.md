@@ -2,7 +2,7 @@
 
 A stock's daily price and volume history is a fingerprint: how much it moves, how it co-moves with the market and with other stocks, how much it trades. This project asks how much of a Swiss stock's metadata can be read back from that fingerprint alone: its future volatility, beta, liquidity, its market capitalisation and its sector. It compares a deliberately simple feature set against an engineered one, with a linear model and a gradient boosted tree model, under a leakage-controlled time / ticker split.
 
-How to read the results: the headline section scores the static targets (`sector`, `log_mcap`) once per stock with repeated issuer-grouped cross-validation over all Swiss stocks, and reads the forward targets (`vol_1m`, `beta_1y`, `liquidity_1m`) against a persistence model and the target's own noise ceiling. The per-observation benchmark of v1-v5, including the self-supervised fingerprint encoder (v4, v5), follows below it unchanged; the encoder did not beat the engineered features beyond noise. Later add-on rounds keep their own result files. v9 found one clear gain: `log_mcap` per-stock R² rises from 0.891 (ridge) to 0.922 with several past month-ends per training stock plus extra traded-value / index-review / SMI features (`ridge_md_ext (v9)` in the headline table, paired difference +0.031 [+0.014, +0.048]); its `vol_1m` and `beta_1y` gains over the previous best arms are small (+0.005 and +0.008 test R²) with intervals that reach or span zero. v10 added a longer Swiss training history, which raises `beta_1y` to 0.650 (+0.016 [+0.006, +0.027] over the same model without it, a headline row), and European reference stocks for `sector`, which add +0.024 macro-F1 over `knn_auto` with an interval spanning zero. Sector accuracy is limited mainly by the small number of Swiss stocks: in the pooled benchmark the same kind of kNN scores macro-F1 0.766 on 850 European stocks against 0.579 on the Swiss ones.
+How to read the results: the headline section scores the static targets (`sector`, `log_mcap`) once per stock with repeated issuer-grouped cross-validation over all Swiss stocks, and reads the forward targets (`vol_1m`, `beta_1y`, `liquidity_1m`) against a persistence model and the target's own noise ceiling. The per-observation benchmark of v1-v5, including the self-supervised fingerprint encoder (v4, v5), follows below it unchanged; the encoder did not beat the engineered features beyond noise. Later add-on rounds keep their own result files. v9 found one clear gain: `log_mcap` per-stock R² rises from 0.891 (ridge) to 0.922 with several past month-ends per training stock plus extra traded-value / index-review / SMI features (`ridge_md_ext (v9)` in the headline table, paired difference +0.031 [+0.014, +0.048]); its `vol_1m` and `beta_1y` gains over the previous best arms are small (+0.005 and +0.008 test R²) with intervals that reach or span zero. v10 added a longer Swiss training history, which raises `beta_1y` to 0.650 (+0.016 [+0.006, +0.027] over the same model without it, a headline row), and European reference stocks for `sector`, which add +0.024 macro-F1 over `knn_auto` with an interval spanning zero. This is consistent with the small number of Swiss stocks being the main limit for sector accuracy (descriptive, not a paired test): in the pooled benchmark the same kind of kNN scores macro-F1 0.766 on 850 European stocks against 0.579 on the Swiss ones.
 
 ## Data
 
@@ -37,7 +37,7 @@ Splits:
 - Time targets (`vol_1m`, `beta_1y`, `liquidity_1m`): train ≤ 2021-12-31, validation 2022-01-01..2023-12-31, test ≥ 2024-01-01. Train and validation observations whose forward window ends after their split are dropped; test needs a complete forward window.
 - Grouped targets (`log_mcap`, `sector`): 70/15/15 by ticker, seed 42, stratified by sector; all dates of a ticker stay in one split.
 
-Leakage controls: features see only data up to the feature date, targets only later data (except `log_mcap`/`sector`, which are contemporaneous/static and therefore split by ticker). Winsorization (1%/99%), log scale, imputation and standardization are fitted on train only. The PCA weights are fitted on training-period returns (≤ 2021-12-31) only, and for the ticker-grouped targets on training tickers only. Hyper-parameters are tuned on validation; the test split is scored once.
+Leakage controls: features see only data up to the feature date, targets only later data (except `log_mcap`/`sector`, which are contemporaneous/static and therefore split by ticker). Winsorization (1%/99%), log scale, imputation and standardization are fitted on train only. The PCA weights are fitted on training-period returns (≤ 2021-12-31) only, and for the ticker-grouped targets on training tickers only. Hyper-parameters are tuned on validation; the test split is scored once per experiment (see Limitations for repeated reads across rounds).
 
 ## Results
 
@@ -46,7 +46,7 @@ Leakage controls: features see only data up to the feature date, targets only la
 
 Static targets, one row per stock: repeated issuer-grouped stratified 5-fold cross-validation over all eligible Swiss stocks (10 repeats; share lines of one company, such as LISN/LISP, RO/ROP, SCHN/SCHP and UHR/UHRN, always stay in the same fold), hyper-parameters by inner CV on the training folds only. Mean ± sd over repeats; 95% interval from a stock bootstrap of the repeat-averaged metric. `sector` uses each stock's full daily price history; Utilities (4 stocks) is dropped because classes need at least 5 stocks. `knn` uses raw return correlations, `knn_resid` correlations of returns after removing the SPI market return, `knn_auto` lets inner CV choose among six market-adjusted correlation matrices and k (matrices use returns only, never labels). `log_mcap` is close × today's share count at the latest month-end (no historical share-count bias); `ridge_logtv21` uses only the 21-day traded value, which carries most of the signal. Source: `results/static_cv_grouped.csv`.
 
-Earlier headline (per-ticker folds, `results/static_cv.csv`): `knn_auto` macro-F1 0.598 (now 0.578), `ridge` R² 0.892 (now 0.891). Per-ticker folds let a share line be predicted from its sibling line (return correlation 0.82-0.94), so the grouped numbers are the honest ones.
+Earlier headline (per-ticker folds, `results/static_cv.csv`): `knn_auto` macro-F1 0.598 (now 0.578), `ridge` R² 0.892 (now 0.891). Per-ticker folds let a share line be predicted from its highly correlated sibling line, so the grouped numbers are the honest ones.
 
 `sector` (203 stocks, 9 classes):
 
@@ -72,7 +72,7 @@ Earlier headline (per-ticker folds, `results/static_cv.csv`): `knn_auto` macro-F
 
 `ridge_md_ext` (v9, same folds and protocol): ridge trained on several past month-ends of each training stock (1 to 12 dates, chosen by inner CV; converted to today by the price ratio) with extra price/volume features (index-review volume spike, traded-value structure, SMI co-movement). Paired difference to `ridge`: +0.031 R² [+0.014, +0.048]. It was picked after comparing about ten v9 arms on these same folds, so it carries a small selection optimism. Source: `results/static_v9_mcap_grouped.csv`.
 
-Forward targets on the test split, read against two references: a persistence model (one feature, OLS fitted on train: past 21-day log vol, past 252-day beta, past 21-day log traded value) and the split-half reliability of the target (odd vs even days of the forward window, Spearman-Brown corrected). The reliability describes how noisy the target measurement is; it is not an attainable forecasting bound, because both halves share shocks that are unknowable at the forecast date. Best model = highest validation R² over all model rows. Skill = (R² − persistence R²) / (1 − persistence R²). Source: `results/ceilings.csv`, `results/metrics.csv`.
+Forward targets on the test split, read against two references: a persistence model (one feature, OLS fitted on train: past 21-day log vol, past 252-day beta, past 21-day log traded value) and the split-half reliability of the target (odd vs even days of the forward window, Spearman-Brown corrected). The reliability describes how noisy the target measurement is; it is not an attainable forecasting bound, because both halves share shocks that are unknowable at the forecast date. Best model = highest validation R² among the v1-v5 rows of `results/metrics.csv` (the add-on rounds below select separately). Skill = (R² − persistence R²) / (1 − persistence R²). Source: `results/ceilings.csv`, `results/metrics.csv`.
 
 | Target | Best model (by validation) | Test R² | Persistence R² | Skill over persistence | Measurement reliability |
 |---|---|---:|---:|---:|---:|
@@ -490,25 +490,45 @@ All metrics (validation and test, MAE/RMSE/QLIKE, accuracy, log loss): [`results
 - `vol_1m` windows with zero realized volatility are dropped (count in `results/run_info.json`). QLIKE for `vol_1m` uses the log-normal mean variance forecast `exp(2·pred + 2·s²)` with `s²` the validation residual variance.
 - The v4/v5 rows need the Kaggle fingerprint outputs: set `EF_FP_DIR` to the folder with `fp_embeddings_*.parquet`, `fp_comove_*.parquet` and the `fpnet*` prediction files before `run` (default `data/fingerprint/`); when the files are missing there, `run` silently writes the v1-v3 rows only.
 - The v7/v8 add-on experiments (Welch beta, Kalman beta, MiniRocket) compare each arm with `linear_fe` only and were run after many earlier arms on the same validation and test periods, so a small test gain can partly be selection luck. Against the best earlier model chosen on validation, MiniRocket + engineered features ties for `vol_1m` and scores higher on test for `beta_1y`, where `fpnet_a` keeps the higher validation score; the Kalman beta does not help.
-- Best-by-validation choices carry a winner's-curse margin: in the 2026-10-17 review a +0.010 validation gain for `vol_1m` shrank to +0.002 on test, so the +0.007 `vol_1m` gap between v4 and v1-v3 is within noise.
-- v10 European stocks come from today's index constituent lists, so the references and the per-region benchmark rows are survivor-only, more strongly than the Swiss side. The cross-listing filter (same normalised name, or weekly CHF return correlation ≥ 0.90) drops 4 European lines; one pair is two distinct companies (Porsche SE vs Porsche AG). This shrinks the reference set slightly but cannot leak a label.
+- Best-by-validation choices carry a winner's-curse margin: the v9 `vol_1m` stack beats `ridge_mrfe` by +0.026 R² on validation (0.672 vs 0.646) but only +0.005 [-0.000, +0.011] on test (`results/forward_v9_vol.csv`), so small gaps between the best models are within noise.
+- v10 European stocks come from today's index constituent lists, so the references and the per-region benchmark rows are survivor-only, more strongly than the Swiss side. The cross-listing filter (same normalised name, or weekly CHF return correlation ≥ 0.90) also drops lines of distinct companies (Porsche SE vs Porsche AG, British Land vs Land Securities) next to true share classes (Maersk, Handelsbanken); this shrinks the reference set slightly but cannot leak a label.
+- The test split is scored once per experiment file, but across the v1-v10 rounds the same test rows were read many times, and the add-on rounds were designed after earlier test results were known, so later test numbers are a second look rather than a clean hold-out.
+- Forward add-on intervals (v7-v9) resample stocks only; same-date dependence between stocks is not resampled there (the v10 history rows also use a month-block bootstrap and report the wider interval). The static stock bootstrap resamples share lines of one issuer as independent stocks.
+- `results/metrics.csv`, `robustness.csv` and `run_info.json` were produced at commit 0f5692a (`run_info.json`); later changes to the run path were behaviour-preserving, and the v10 `history_ext` control reproduced the `linear_fe` / `lgbm_fe` rows of `metrics.csv` (max abs diff below 1e-16).
+- Code structure: the experiment modules were added round by round (v6-v10) and share a copied skeleton (folds, bootstrap, metric rows, reproduction checks); `static_cv.py` doubles as the shared library for the later static experiments. The duplicates were left as they are so that every committed result stays reproducible bit for bit.
 - v10 kept only the European arm after the first run had shown that US references lowered the Swiss sector score; that is a post-hoc choice, so the `ch_eu` interval is optimistic.
 - Static headline tables moved to issuer-grouped folds in v10; rows from earlier rounds that copy per-ticker numbers (`sector_eu`, `static_v9_sector`) are per-ticker and are not paired with the grouped headline.
 
 ## How to run
 
+All commands run from the repo root; the package is used from `src/` through `PYTHONPATH` (no install step). `requirements.lock` lists the exact versions that produced the committed results (Python 3.12).
+
 ```bash
-python -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/pip install -e .
+python3.12 -m venv .venv && .venv/bin/pip install -r requirements.lock      # or requirements.txt (unpinned)
+env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m unittest discover -s tests   # synthetic tests only (226)
 env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.data     # download + cache data/ (git-ignored)
-env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.run      # features, targets, models -> results/
-env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.static_cv  # v6: per-stock sector / log_mcap, repeated CV
-env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.ceilings   # v6: persistence and noise ceilings
+env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.run      # v1-v5 benchmark -> metrics.csv, robustness.csv, run_info.json
+env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.static_cv  # v6: per-stock sector / log_mcap, repeated CV (per-ticker folds)
 env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.static_cv --grouped       # headline: issuer-grouped folds
+env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.ceilings   # v6: persistence and noise ceilings
+env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.forward_v7         # v7: Welch beta
+env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.forward_kalman     # v8: Kalman beta
+env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.forward_minirocket # v8: MiniRocket
+env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.extra_market       # v9: VIX / Euro Stoxx 50 closes
+env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.forward_v9_beta
+env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.forward_v9_vol
+env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.tabpfn_mcap        # v9: TabPFN v2 (checkpoint data/models/tabpfn-v2-regressor.ckpt or EF_TABPFN_CKPT)
+env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.static_v9_mcap     # v9 section (per-ticker folds)
 env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.static_v9_mcap --grouped  # headline ridge_md_ext row
+env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.static_v9_sector
+env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.pretrain_data      # non-Swiss price cache (v4 encoder, v9/v10 references)
+env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.sector_eu
 env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.multi_market --download-fx  # v10: CHF cross rates
 env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.multi_static    # v10: sector / log_mcap with European stocks
 env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.history_ext --arms  # v10: longer Swiss history (from 2011)
 env -u PYTHONPATH PYTHONPATH=src .venv/bin/python -m equity_fingerprint.report   # rebuild the results block above
 ```
+
+The v4/v5 fingerprint rows need the encoder outputs from the Kaggle GPU runs (`EF_FP_DIR`, see Limitations). The `*_oof.parquet` and `*_selection.csv` files next to each table hold the out-of-fold predictions and the hyper-parameter choices behind it. `report` leaves out a section whose result file is missing.
 
 Set `EF_DATA_DIR` to use a data folder other than `./data`.
