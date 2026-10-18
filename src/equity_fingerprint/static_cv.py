@@ -29,6 +29,9 @@ log_mcap
 
 Outputs (results/ by default): static_cv.csv, static_cv_oof.parquet (sector class names in y_true / y_pred,
 log_mcap values as floats in y_true_num / y_pred_num), static_cv_knn_auto_selection.csv.
+Issuer-grouped variant (v10, ``--grouped`` / ``run(grouped=True)``): share lines of one issuer (``company`` in
+universe.csv) stay in one fold, outer and inner (StratifiedGroupKFold for sector, GroupKFold for log_mcap,
+same seeds); files static_cv_grouped.csv, static_cv_grouped_oof.parquet, static_cv_grouped_knn_auto_selection.csv.
 """
 from __future__ import annotations
 
@@ -42,8 +45,9 @@ import pandas as pd
 from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.metrics import (accuracy_score, balanced_accuracy_score, f1_score, mean_absolute_error,
                              r2_score)
-from sklearn.model_selection import KFold, StratifiedKFold
+from sklearn.model_selection import GroupKFold, KFold, StratifiedGroupKFold, StratifiedKFold
 
+from .data import load_universe
 from .features import FE_BASE_FEATURES, base_features, build_panel, month_end_positions
 from .models import LOGIT_CS, RIDGE_ALPHAS, Prep
 from .targets import log_mcap_target, sector_map
@@ -208,19 +212,45 @@ def _macro(y_true, y_pred, n_classes):
     return f1_score(y_true, y_pred, labels=list(range(n_classes)), average="macro", zero_division=0)
 
 
-def _inner_splits(y_tr: np.ndarray, seed: int = INNER_SEED):
+def _inner_splits(y_tr: np.ndarray, seed: int = INNER_SEED, groups: np.ndarray | None = None):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
+        if groups is not None:
+            return list(StratifiedGroupKFold(5, shuffle=True, random_state=seed).split(np.zeros(len(y_tr)), y_tr, groups))
         return list(StratifiedKFold(5, shuffle=True, random_state=seed).split(np.zeros(len(y_tr)), y_tr))
 
 
+def _group_kfold(n: int, groups: np.ndarray, seed: int):
+    """GroupKFold(5, shuffle) splits of n rows: all rows of one group land in the same fold."""
+    return list(GroupKFold(5, shuffle=True, random_state=seed).split(np.zeros(n), groups=groups))
+
+
+def issuer_ids(tickers, universe_csv=None) -> np.ndarray:
+    """Integer issuer id per ticker: stocks with the same `company` in the universe file (share lines such as
+    LISN/LISP) share an id; a ticker missing from the file gets its own id. universe_csv: path, DataFrame or
+    None (data/universe.csv)."""
+    uni = universe_csv if isinstance(universe_csv, pd.DataFrame) else (
+        load_universe() if universe_csv is None else pd.read_csv(universe_csv))
+    comp = dict(zip(uni["ticker"], uni["company"]))
+    ids: dict = {}
+    out = []
+    for t in tickers:
+        c = comp.get(t)
+        key = ("company", c) if isinstance(c, str) and c.strip() else ("ticker", t)
+        out.append(ids.setdefault(key, len(ids)))
+    return np.array(out, dtype=int)
+
+
 def sector_fold(C: np.ndarray, y: np.ndarray, fe: pd.DataFrame, train: np.ndarray, test: np.ndarray,
-                n_classes: int, mats: dict | None = None, selections: list | None = None) -> dict[str, np.ndarray]:
+                n_classes: int, mats: dict | None = None, selections: list | None = None,
+                groups: np.ndarray | None = None) -> dict[str, np.ndarray]:
     """Predict class indices of `test` stocks for every sector model. Reads y[train] only.
 
     C: (n, n) correlation matrix with NaN diagonal; y: class indices (entries outside train ignored);
     fe: per-stock feature means (rows aligned with C). mats (optional, name -> matrix, MATRIX_NAMES) adds
     knn_resid and knn_auto; the chosen (matrix, k) of knn_auto is appended to `selections` if given.
+    groups (optional, issuer id per stock, aligned with C): inner folds are StratifiedGroupKFold on
+    groups[train]; None keeps the per-stock StratifiedKFold.
     """
     train, test = np.asarray(train), np.asarray(test)
     y_tr = y[train]
@@ -230,7 +260,7 @@ def sector_fold(C: np.ndarray, y: np.ndarray, fe: pd.DataFrame, train: np.ndarra
     knn_score = {k: [] for k in KNN_KS}
     auto_score = {(mn, k): [] for mn in MATRIX_NAMES for k in KNN_KS} if mats is not None else {}
     logit_score = {(m, c): [] for m in ("prof_logit", "femean_logit", "prof_femean_logit") for c in LOGIT_CS}
-    for itr, iva in _inner_splits(y_tr):
+    for itr, iva in _inner_splits(y_tr, groups=None if groups is None else np.asarray(groups)[train]):
         a, b = train[itr], train[iva]
         maj = int(np.bincount(y[a], minlength=n_classes).argmax())
         S = _masked_sims(C, a, b)
@@ -272,27 +302,34 @@ def class_metrics(y_true, y_pred, n_classes) -> dict[str, float]:
             "balanced_accuracy": balanced_accuracy_score(y_true, y_pred)}
 
 
-def run_sector_repeat(C, y, fe, n_classes, repeat, mats=None, selections=None) -> dict[str, np.ndarray]:
-    """One outer repeat: pooled out-of-fold class predictions (every stock exactly once)."""
+def run_sector_repeat(C, y, fe, n_classes, repeat, mats=None, selections=None, groups=None) -> dict[str, np.ndarray]:
+    """One outer repeat: pooled out-of-fold class predictions (every stock exactly once). groups (issuer ids)
+    switches the outer and inner folds to StratifiedGroupKFold; None is the per-stock StratifiedKFold."""
     models = SECTOR_MODELS_V7 if mats is not None else SECTOR_MODELS
     oof = {m: np.full(len(y), -1, dtype=int) for m in models}
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        folds = list(StratifiedKFold(5, shuffle=True, random_state=repeat).split(np.zeros(len(y)), y))
+        if groups is None:
+            folds = list(StratifiedKFold(5, shuffle=True, random_state=repeat).split(np.zeros(len(y)), y))
+        else:
+            folds = list(StratifiedGroupKFold(5, shuffle=True, random_state=repeat).split(np.zeros(len(y)), y, groups))
     for tr, te in folds:
-        pred = sector_fold(C, y, fe, tr, te, n_classes, mats, selections)
+        pred = sector_fold(C, y, fe, tr, te, n_classes, mats, selections, groups)
         for m in models:
             oof[m][te] = pred[m]
     return oof
 
 
 # --------------------------------------------------------------------------- log_mcap
-def mcap_fold(X: pd.DataFrame, y: np.ndarray, train: np.ndarray, test: np.ndarray) -> dict[str, np.ndarray]:
-    """Predict log_mcap of `test` stocks for every model. Reads y[train] only."""
+def mcap_fold(X: pd.DataFrame, y: np.ndarray, train: np.ndarray, test: np.ndarray,
+              groups: np.ndarray | None = None) -> dict[str, np.ndarray]:
+    """Predict log_mcap of `test` stocks for every model. Reads y[train] only. groups (issuer ids aligned
+    with X): inner folds are GroupKFold on groups[train]; None keeps the per-stock KFold."""
     train, test = np.asarray(train), np.asarray(test)
     y_tr = y[train]
     cols = list(X.columns)
-    inner = list(KFold(5, shuffle=True, random_state=INNER_SEED).split(train))
+    inner = (list(KFold(5, shuffle=True, random_state=INNER_SEED).split(train)) if groups is None
+             else _group_kfold(len(train), np.asarray(groups)[train], INNER_SEED))
     ridge_s = {a: [] for a in RIDGE_ALPHAS}
     tv_s = {a: [] for a in RIDGE_ALPHAS}
     lgbm_s = {i: [] for i in range(len(LGBM_GRID))}
@@ -329,10 +366,12 @@ def _lgbm(g: dict):
     return LGBMRegressor(n_estimators=300, learning_rate=0.05, verbose=-1, random_state=42, n_jobs=1, **g)  # 1 thread: ~200 rows; avoids a libomp deadlock when torch is loaded in the same process (unittest discover)
 
 
-def run_mcap_repeat(X: pd.DataFrame, y: np.ndarray, repeat: int) -> dict[str, np.ndarray]:
+def run_mcap_repeat(X: pd.DataFrame, y: np.ndarray, repeat: int, groups=None) -> dict[str, np.ndarray]:
     oof = {m: np.full(len(y), np.nan) for m in MCAP_MODELS}
-    for tr, te in KFold(5, shuffle=True, random_state=repeat).split(np.zeros(len(y))):
-        pred = mcap_fold(X, y, tr, te)
+    folds = (KFold(5, shuffle=True, random_state=repeat).split(np.zeros(len(y))) if groups is None
+             else _group_kfold(len(y), np.asarray(groups), repeat))
+    for tr, te in folds:
+        pred = mcap_fold(X, y, tr, te, groups)
         for m in MCAP_MODELS:
             oof[m][te] = pred[m]
     return oof
@@ -433,8 +472,12 @@ def _oof_rows(target, models, tickers, truth, preds_by_rep, numeric):
     return parts
 
 
-def run(repeats: int = 10, out_dir="results", panel=None) -> pd.DataFrame:
+def run(repeats: int = 10, out_dir="results", panel=None, grouped: bool = False,
+        universe_csv=None) -> pd.DataFrame:
+    """grouped=True: issuer-grouped folds (outer and inner); files get the `_grouped` stem
+    (static_cv_grouped.csv, _oof.parquet, _knn_auto_selection.csv). grouped=False is the v6 per-stock run."""
     t0 = time.time()
+    stem = "static_cv_grouped" if grouped else "static_cv"
     p = panel or build_panel()
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -443,12 +486,13 @@ def run(repeats: int = 10, out_dir="results", panel=None) -> pd.DataFrame:
     tickers, classes, y, C, fe, dropped = sector_inputs(p)
     nc = len(classes)
     print(f"sector: {len(tickers)} stocks, {nc} classes {classes}; dropped {dropped}", flush=True)
+    sg = issuer_ids(tickers, universe_csv) if grouped else None
     mats = sector_matrices(p, tickers)
     np.testing.assert_allclose(mats["raw"], C, equal_nan=True)
     print(f"  matrices built ({time.time() - t0:.0f}s)", flush=True)
     reps, sels = [], []
     for r in range(repeats):
-        reps.append(run_sector_repeat(C, y, fe, nc, r, mats, sels))
+        reps.append(run_sector_repeat(C, y, fe, nc, r, mats, sels, sg))
         print(f"  sector repeat {r} done ({time.time() - t0:.0f}s)", flush=True)
     rows += summarize("sector", SECTOR_MODELS_V7, lambda t, q: class_metrics(t, q, nc),
                       lambda t, ps: bootstrap_ci_mean(t, ps, lambda a, b: fast_class_metrics(a, b, nc)),
@@ -456,23 +500,24 @@ def run(repeats: int = 10, out_dir="results", panel=None) -> pd.DataFrame:
     oofs += _oof_rows("sector", SECTOR_MODELS_V7, tickers, [classes[v] for v in y],
                       [{m: [classes[v] for v in pr[m]] for m in SECTOR_MODELS_V7} for pr in reps], False)
     sel = pd.DataFrame(sels, columns=["matrix", "k"]).value_counts().rename("count").reset_index()
-    sel.to_csv(out / "static_cv_knn_auto_selection.csv", index=False)
+    sel.to_csv(out / f"{stem}_knn_auto_selection.csv", index=False)
     print("knn_auto selections (matrix, k, count over outer folds):")
     print(sel.to_string(index=False), flush=True)
 
     mt, my, mX, mdate = mcap_inputs(p)
     print(f"log_mcap: {len(mt)} stocks at {pd.Timestamp(mdate).date()}", flush=True)
+    mg = issuer_ids(mt, universe_csv) if grouped else None
     reps = []
     for r in range(repeats):
-        reps.append(run_mcap_repeat(mX, my, r))
+        reps.append(run_mcap_repeat(mX, my, r, mg))
         print(f"  log_mcap repeat {r} done ({time.time() - t0:.0f}s)", flush=True)
     rows += summarize("log_mcap", MCAP_MODELS, reg_metrics, lambda t, ps: bootstrap_ci_mean(t, ps, fast_reg_metrics),
                       my, reps, len(mt), np.nan)
     oofs += _oof_rows("log_mcap", MCAP_MODELS, mt, my, reps, True)
 
     res = pd.DataFrame(rows)
-    res.to_csv(out / "static_cv.csv", index=False)
-    pd.concat(oofs, ignore_index=True).to_parquet(out / "static_cv_oof.parquet", index=False)
+    res.to_csv(out / f"{stem}.csv", index=False)
+    pd.concat(oofs, ignore_index=True).to_parquet(out / f"{stem}_oof.parquet", index=False)
     print(f"done in {time.time() - t0:.0f}s")
     return res
 
@@ -481,8 +526,9 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--repeats", type=int, default=10)
     ap.add_argument("--out-dir", default="results")
+    ap.add_argument("--grouped", action="store_true", help="issuer-grouped folds -> static_cv_grouped*.{csv,parquet}")
     a = ap.parse_args()
-    res = run(a.repeats, a.out_dir)
+    res = run(a.repeats, a.out_dir, grouped=a.grouped)
     show = res[res["metric"].isin(["macro_f1", "weighted_f1", "accuracy", "r2", "mae"])]
     with pd.option_context("display.width", 200, "display.float_format", "{:.4f}".format):
         print(show.drop(columns=["n_repeats"]).to_string(index=False))

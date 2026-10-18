@@ -75,16 +75,24 @@ class Panel:
 
 
 def build_panel(data_dir=None) -> Panel:
-    prices = load_prices(data_dir)
-    index = load_index(data_dir)
-    info = load_info(data_dir)
+    return panel_from_frames(load_prices(data_dir), load_index(data_dir), load_info(data_dir))
 
+
+def panel_from_frames(prices: pd.DataFrame, index: pd.DataFrame, info: pd.DataFrame, chf_only: bool = True,
+                      market: str = MARKET, rate: pd.DataFrame | None = None) -> Panel:
+    """Panel from long price / index / info frames (the steps of ``build_panel``).
+
+    chf_only: keep only tickers whose info currency is CHF (the Swiss benchmark); otherwise keep all.
+    market: index ticker whose log returns become ``mkt``.
+    rate: optional (date x ticker) local->CHF factors; close/open/high/low (and so traded value) are
+    multiplied by it on the panel calendar; returns stay in local currency (from ``adj_close``).
+    """
     currency = info.set_index("ticker")["currency"]
     have = sorted(prices["ticker"].unique())
-    chf = [t for t in have if currency.get(t) == "CHF"]
+    keep = [t for t in have if currency.get(t) == "CHF"] if chf_only else have
     excluded_currency = {t: (None if pd.isna(currency.get(t)) else str(currency.get(t)))
-                         for t in have if t not in chf}
-    prices = prices[prices["ticker"].isin(chf)]
+                         for t in have if t not in keep}
+    prices = prices[prices["ticker"].isin(keep)]
 
     def wide(col):
         return prices.pivot(index="date", columns="ticker", values=col).sort_index()
@@ -104,6 +112,10 @@ def build_panel(data_dir=None) -> Panel:
     low = low.where(~miss, close).where(span)
     vol = vol.fillna(0.0).where(span)
 
+    if rate is not None:  # local -> CHF on the panel calendar (prices only; returns stay local)
+        R = rate.reindex(index=cal, columns=adj.columns)
+        close, opn, high, low = close * R, opn * R, high * R, low * R
+
     # OHLC sanity for range-based vols: invalid bars -> NaN, clip H/L to contain O and C
     bad = (opn <= 0) | (high <= 0) | (low <= 0) | (high < low)
     hi = np.maximum(high, np.maximum(opn, close)).where(~bad)
@@ -115,7 +127,7 @@ def build_panel(data_dir=None) -> Panel:
     n_artifacts = int(artifact.sum().sum())
     r = r.mask(artifact, 0.0)
 
-    im = index[index["ticker"] == MARKET].set_index("date")["close"].sort_index()
+    im = index[index["ticker"] == market].set_index("date")["close"].sort_index()
     im = im[~im.index.duplicated()].reindex(cal.union(im.index)).ffill().reindex(cal)
     m = np.log(im).diff()
 

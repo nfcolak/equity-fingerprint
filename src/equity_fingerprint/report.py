@@ -12,6 +12,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[2]
 START, END = "<!-- results:start -->", "<!-- results:end -->"
 HEADLINE_MCAP_V9 = "ridge_md_ext"
+HEADLINE_BETA_V10 = "avg_long2011"   # user decision 2026-10-18: v10 longer-history beta row in the headline
 TARGETS = ["vol_1m", "beta_1y", "log_mcap", "liquidity_1m", "sector"]
 MODELS = ["baseline", "linear_raw", "linear_fe", "lgbm_raw", "lgbm_fe"]
 MAIN = {t: ("macro_f1" if t == "sector" else "r2") for t in TARGETS}
@@ -407,24 +408,56 @@ def build_v5(results: Path) -> list[str]:
     return L
 
 
+def _v10_beta(path: Path) -> dict | None:
+    """Test R² and paired Δ (vs avg_ctrl) of the v10 headline beta row, or None."""
+    if not path.exists():
+        return None
+    h = pd.read_csv(path)
+    r = h[(h.target == "beta_1y") & (h.model == HEADLINE_BETA_V10) & (h.split == "test")].set_index("metric")
+    if not {"r2", "delta_r2_vs_ctrl"} <= set(r.index):
+        return None
+    d = r.loc["delta_r2_vs_ctrl"]
+    return dict(r2=float(r.loc["r2", "value"]), d=float(d["value"]), lo=float(d["ci_lo"]), hi=float(d["ci_hi"]))
+
+
 def build_v6(results: Path) -> list[str]:
     """Headline section (v6 protocol): static targets per stock with repeated CV, forward targets against their
-    persistence baseline and split-half noise ceiling. [] when neither v6 file exists."""
-    sc_p, ce_p = results / "static_cv.csv", results / "ceilings.csv"
+    persistence baseline and split-half noise ceiling. [] when neither v6 file exists. Static tables use the
+    issuer-grouped files (`static_cv_grouped.csv`, `static_v9_mcap_grouped.csv`) when present (v10 user
+    decision 2026-10-18); the per-ticker files are the reference otherwise."""
+    grouped = (results / "static_cv_grouped.csv").exists()
+    sc_name = "static_cv_grouped.csv" if grouped else "static_cv.csv"
+    v9_name = "static_v9_mcap_grouped.csv" if (results / "static_v9_mcap_grouped.csv").exists() else "static_v9_mcap.csv"
+    sc_p, ce_p = results / sc_name, results / "ceilings.csv"
     if not sc_p.exists() and not ce_p.exists():
         return []
     L = ["### Headline (v6 protocol)", ""]
     if sc_p.exists():
         sc = pd.read_csv(sc_p)
-        L += ["Static targets, one row per stock: repeated stratified 5-fold cross-validation over all eligible Swiss "
-              "stocks (10 repeats), hyper-parameters by inner CV on the training folds only. Mean ± sd over repeats; "
+        folds = ("repeated issuer-grouped stratified 5-fold cross-validation over all eligible Swiss stocks (10 "
+                 "repeats; share lines of one company, such as LISN/LISP, RO/ROP, SCHN/SCHP and UHR/UHRN, always "
+                 "stay in the same fold)" if grouped else
+                 "repeated stratified 5-fold cross-validation over all eligible Swiss stocks (10 repeats)")
+        L += [f"Static targets, one row per stock: {folds}, hyper-parameters by inner CV on the training folds only. "
+              "Mean ± sd over repeats; "
               "95% interval from a stock bootstrap of the repeat-averaged metric. `sector` uses each stock's full daily "
               "price history; Utilities (4 stocks) is dropped because classes need at least 5 stocks. `knn` uses raw "
               "return correlations, `knn_resid` correlations of returns after removing the SPI market return, "
               "`knn_auto` lets inner CV choose among six market-adjusted correlation matrices and k (matrices use "
               "returns only, never labels). `log_mcap` is close × today's share count at the latest month-end (no "
               "historical share-count bias); `ridge_logtv21` uses only the 21-day traded value, which carries most "
-              "of the signal. Source: `results/static_cv.csv`.", ""]
+              f"of the signal. Source: `results/{sc_name}`.", ""]
+        old_p = results / "static_cv.csv"
+        if grouped and old_p.exists():
+            old = pd.read_csv(old_p)
+            g = lambda d, t, m, me: d[(d.target == t) & (d.model == m) & (d.metric == me)]["mean"]  # noqa: E731
+            a, b = g(old, "sector", "knn_auto", "macro_f1"), g(sc, "sector", "knn_auto", "macro_f1")
+            c, e = g(old, "log_mcap", "ridge", "r2"), g(sc, "log_mcap", "ridge", "r2")
+            if len(a) and len(b) and len(c) and len(e):
+                L += [f"Earlier headline (per-ticker folds, `results/static_cv.csv`): `knn_auto` macro-F1 "
+                      f"{a.iloc[0]:.3f} (now {b.iloc[0]:.3f}), `ridge` R² {c.iloc[0]:.3f} (now {e.iloc[0]:.3f}). "
+                      "Per-ticker folds let a share line be predicted from its sibling line (return correlation "
+                      "0.82-0.94), so the grouped numbers are the honest ones.", ""]
         for t, cols in (("sector", ["macro_f1", "weighted_f1", "accuracy", "balanced_accuracy"]), ("log_mcap", ["r2", "mae"])):
             d = sc[sc.target == t]
             if d.empty:
@@ -440,7 +473,7 @@ def build_v6(results: Path) -> list[str]:
                 ci = (f"[{r.loc[cols[0], 'ci_lo']:.3f}, {r.loc[cols[0], 'ci_hi']:.3f}]"
                       if cols[0] in r.index and pd.notna(r.loc[cols[0], "ci_lo"]) else "n/a")
                 L.append(f"| {mod} | " + " | ".join(cells) + f" | {ci} |")
-            v9_p = results / "static_v9_mcap.csv"
+            v9_p = results / v9_name
             if t == "log_mcap" and v9_p.exists():   # user decision 2026-10-17: v9 headline log_mcap row
                 v9 = pd.read_csv(v9_p)
                 r = v9[v9.model == HEADLINE_MCAP_V9].set_index("metric")
@@ -455,11 +488,12 @@ def build_v6(results: Path) -> list[str]:
                           "traded-value structure, SMI co-movement). Paired difference to `ridge`: "
                           f"{r.loc[k, 'mean']:+.3f} R² [{r.loc[k, 'ci_lo']:+.3f}, {r.loc[k, 'ci_hi']:+.3f}]. It was "
                           "picked after comparing about ten v9 arms on these same folds, so it carries a small "
-                          "selection optimism. Source: `results/static_v9_mcap.csv`."]
+                          f"selection optimism. Source: `results/{v9_name}`."]
             L.append("")
     if ce_p.exists():
         ce = pd.read_csv(ce_p)
         m = pd.read_csv(results / "metrics.csv")
+        v10_beta = _v10_beta(results / "history_ext.csv")
         L += ["Forward targets on the test split, read against two references: a persistence model (one feature, OLS "
               "fitted on train: past 21-day log vol, past 252-day beta, past 21-day log traded value) and the split-half "
               "reliability of the target (odd vs even days of the forward window, Spearman-Brown corrected). The "
@@ -480,8 +514,19 @@ def build_v6(results: Path) -> list[str]:
                 continue
             pr, rel = float(c["persistence_ols_r2"].iloc[0]), float(c["reliability"].iloc[0])
             L.append(f"| `{t}` | {best} | {r2:.3f} | {pr:.3f} | {(r2 - pr) / (1 - pr):.2f} | {rel:.3f} |")
+            if t == "beta_1y" and v10_beta is not None:
+                r2b = v10_beta["r2"]
+                L.append(f"| `{t}` | {HEADLINE_BETA_V10} (v10) | {r2b:.3f} | {pr:.3f} | {(r2b - pr) / (1 - pr):.2f} | "
+                         f"{rel:.3f} |")
         L += ["", "`liquidity_1m` is almost fully explained by last month's traded value, so it is reported but is not a "
                   "headline result.", ""]
+        if v10_beta is not None:
+            L += [f"`{HEADLINE_BETA_V10}` (v10, user decision 2026-10-18): the engineered-feature linear/LightGBM "
+                  "average trained with extra Swiss training rows from 2011 (SMI as market before the SPI starts in "
+                  "2013); validation and test rows are the same as above. It was the pre-specified primary comparison "
+                  "of the longer-history run, not picked by the best-by-validation rule: paired test Δ R² vs the same "
+                  f"model without the extra rows {v10_beta['d']:+.3f} [{v10_beta['lo']:+.3f}, {v10_beta['hi']:+.3f}]. "
+                  "Source: `results/history_ext.csv`.", ""]
     intro = {
         "forward_v7": "Welch slope-winsorised betas (stock return clipped to [-2m, 4m] around the market return m, "
                       "252-day and age-decayed) and linear/LightGBM averages",
@@ -598,11 +643,97 @@ def build_v9(results: Path) -> list[str]:
     return L
 
 
+def _ci(lo, hi) -> str:
+    return f"[{lo:+.3f}, {hi:+.3f}]" if pd.notna(lo) and pd.notna(hi) else "–"
+
+
+def build_v10(results: Path) -> list[str]:
+    """v10 European-stock and longer Swiss history add-ons. [] when no v10 file exists."""
+    ms_p, he_p = results / "multi_static.csv", results / "history_ext.csv"
+    if not (ms_p.exists() or he_p.exists()):
+        return []
+    L = ["### v10: European stocks, longer Swiss history", "",
+         "User decision 2026-10-18: European stocks (domicile matches the listing country, no Swiss issuer, "
+         "cross-listings removed, prices in CHF) may be kNN references; Swiss stocks stay the only scored stocks "
+         "except in the `pooled` rows. The first v10 run also used about 2,300 US stocks: as references they lowered "
+         "the Swiss sector score, and pooled US/EU training rows did not help `vol_1m` or `beta_1y`, so the user "
+         "removed the US stocks and the pooled forward training; the 2000-2009 history arm added nothing over 2011 "
+         "and was removed too. Keeping only the European arm is therefore a choice made after seeing results. The "
+         "test split was read in earlier rounds, so these test numbers are a second look. Foreign stocks come from "
+         "today's index lists and listings (survivor universe).", ""]
+    if ms_p.exists():
+        s = pd.read_csv(ms_p)
+        q = s[(s["eval"] == "ch_query") & (s.target == "sector")]
+        if not q.empty:
+            n = int(q["n_stocks"].iloc[0])
+            L += [f"`sector`, Swiss queries ({n} stocks, issuer-grouped folds, 10 repeats). `ch_knn_auto` is the "
+                  "headline model on these folds; `ch_menu` the new recipe (daily or two-factor weekly residual "
+                  "correlations, class-prior-corrected votes) with Swiss references only; `ch_eu` adds European "
+                  "labelled references. Main comparison: `ch_eu` vs `ch_knn_auto`. "
+                  "Source: `results/multi_static.csv`.", "",
+                  "| Arm | macro_f1 | 95% interval | Δ vs ch_knn_auto [95%] | Δ vs ch_menu [95%] |",
+                  "|---|---:|---:|---:|---:|"]
+            for mod in dict.fromkeys(q["model"]):
+                r = q[q.model == mod].set_index("metric")
+                if "macro_f1" not in r.index:
+                    continue
+                d = []
+                for ref in ("ch_knn_auto", "ch_menu"):
+                    k = f"delta_macro_f1_vs_{ref}"
+                    d.append(f"{r.loc[k, 'mean']:+.3f} {_ci(r.loc[k, 'ci_lo'], r.loc[k, 'ci_hi'])}"
+                             if k in r.index else "–")
+                star = " (main)" if mod == "ch_eu" else ""
+                L.append(f"| {mod}{star} | {r.loc['macro_f1', 'mean']:.3f} ± {r.loc['macro_f1', 'sd']:.3f} | "
+                         f"[{r.loc['macro_f1', 'ci_lo']:.3f}, {r.loc['macro_f1', 'ci_hi']:.3f}] | " + " | ".join(d) + " |")
+            L.append("")
+        p = s[s["eval"] == "pooled"]
+        if not p.empty:
+            L += ["Pooled benchmark: every eligible stock (Swiss and European) is a query, issuer-grouped folds "
+                  "stratified by region and class, 10 repeats; scores per region. `sector`: kNN on two-factor weekly "
+                  "residual correlations. `log_mcap`: stocks whose close × share count is more than 0.25 log units "
+                  "from the reported market cap are dropped (class-specific share counts). Descriptive; not paired "
+                  "with the Swiss-only rows.", "",
+                  "| Target | Model | Metric | CH | EU | ALL |", "|---|---|---|---:|---:|---:|"]
+            for t, me in (("sector", "macro_f1"), ("log_mcap", "r2")):
+                for mod in dict.fromkeys(p[p.target == t]["model"]):
+                    r = p[(p.target == t) & (p.model == mod) & (p.metric == me)].set_index("region")
+                    if r.empty:
+                        continue
+                    cells = [f"{r.loc[g, 'mean']:.3f} ({int(r.loc[g, 'n_stocks'])})" if g in r.index else "–"
+                             for g in ("CH", "EU", "ALL")]
+                    L.append(f"| `{t}` | {mod} | {me} | " + " | ".join(cells) + " |")
+            L += ["", "Cells: mean over repeats (stocks).", ""]
+    if he_p.exists():
+        h = pd.read_csv(he_p)
+        L += ["Longer Swiss history: extra TRAIN rows before 2014-03 (`long2011`: the existing 2010+ cache with the "
+              "SMI as market series before the SPI starts in 2013). Validation and test rows are identical to the "
+              "control. Primary: `avg_long2011` vs `avg_ctrl` (now also a headline row). "
+              "Source: `results/history_ext.csv`, `results/history_quality.csv`.", "",
+              "| Target | Model | Val R² | Test R² | Test Δ vs ctrl (same kind) [95%] |", "|---|---|---:|---:|---:|"]
+        for t in ("vol_1m", "beta_1y"):
+            ht = h[h.target == t]
+            for mod in dict.fromkeys(ht["model"]):
+                r = ht[ht.model == mod]
+                g = lambda sp, me: r[(r.split == sp) & (r.metric == me)]  # noqa: E731
+                vr, tr, dl = g("val", "r2"), g("test", "r2"), g("test", "delta_r2_vs_ctrl")
+                if vr.empty or tr.empty:
+                    continue
+                c = f"{dl['value'].iloc[0]:+.3f} {_ci(dl['ci_lo'].iloc[0], dl['ci_hi'].iloc[0])}" if not dl.empty else "–"
+                prim = " (primary)" if mod == "avg_long2011" else ""
+                L.append(f"| `{t}` | {mod}{prim} | {vr['value'].iloc[0]:.3f} | {tr['value'].iloc[0]:.3f} | {c} |")
+        sec = h[(h.target == "sector") & (h.metric == "macro_f1")]
+        if not sec.empty:
+            parts = [f"{r.model} {r.features} ({r.folds} folds) {r.value:.3f}" for r in sec.itertuples()]
+            L += ["", "`sector` kNN on longer return histories (macro-F1, 10 repeats): " + "; ".join(parts) + "."]
+        L.append("")
+    return L
+
+
 def build_block(results: Path) -> str:
     m = pd.read_csv(results / "metrics.csv")
     test = m[m["split"] == "test"]
 
-    v6 = build_v6(results) + build_v9(results)
+    v6 = build_v6(results) + build_v9(results) + build_v10(results)
     lines = v6 + (["### Per-observation benchmark (v1-v5)", ""] if v6 else []) + [
         "Test split (time targets: observations from 2024-01-01 on; grouped targets: held-out tickers). "
         "Main metric: R² for the four regression targets (on the log scale for `vol_1m`, `log_mcap`, "

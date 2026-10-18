@@ -27,6 +27,13 @@ Paired rows ``delta_r2_vs_ridge`` / ``delta_mae_vs_ridge`` for every arm but rid
 metric(arm) - metric(ridge), CI = 2.5/97.5 percentiles of the stock-bootstrap (same resampled stocks for both
 arms) repeat-averaged difference.
 
+Issuer-grouped variant (v10, ``--grouped`` / ``run(grouped=True)``): ``groups`` (issuer id per stock, from
+``static_cv.issuer_ids``) turns the outer folds into GroupKFold(5, shuffle, random_state=repeat) and every inner
+KFold (pair_fold, md_fold) into GroupKFold on the training stocks (INNER_SEED); multi-date rows keep their stock's
+group because folds are over stocks. Writes static_v9_mcap_grouped.csv, static_v9_mcap_grouped_oof.parquet and
+static_v9_mcap_grouped_md_selection.csv; the TabPFN merge is not run (not in the headline) and the reproduction
+check compares the ridge arm with static_cv_grouped.csv.
+
 Outputs (out-dir, default results/): static_v9_mcap.csv (columns as static_cv.csv), static_v9_mcap_oof.parquet
 (static_cv_oof layout), static_v9_mcap_md_selection.csv. The CLI prints a reproduction check of the ridge arm
 against static_cv.csv (mean and sd of r2 / mae to 1e-9) and exits non-zero on a mismatch.
@@ -45,8 +52,8 @@ from sklearn.model_selection import KFold
 
 from .features import FE_BASE_FEATURES, base_features, build_panel, month_end_positions
 from .models import RIDGE_ALPHAS, Prep
-from .static_cv import (BOOT_SEED, INNER_SEED, LGBM_GRID, N_BOOT, _lgbm, _oof_rows, bootstrap_ci_mean,
-                        fast_reg_metrics, reg_metrics, summarize)
+from .static_cv import (BOOT_SEED, INNER_SEED, LGBM_GRID, N_BOOT, _group_kfold, _lgbm, _oof_rows,
+                        bootstrap_ci_mean, fast_reg_metrics, issuer_ids, reg_metrics, summarize)
 from .tabpfn_mcap import (FE_EXT, TABPFN_FILE, ext_features, mcap_inputs_v9, outer_folds)
 
 MD_GRID = [(1, 1), (3, 1), (6, 1), (12, 1), (6, 3)]
@@ -63,13 +70,21 @@ def _lin(prep, X) -> np.ndarray:
 
 
 # --------------------------------------------------------------------------- ridge / lgbm / blend on one row per stock
-def pair_fold(X: pd.DataFrame, y: np.ndarray, train: np.ndarray, test: np.ndarray) -> dict[str, np.ndarray]:
+def _inner_folds(train: np.ndarray, groups) -> list:
+    """Inner 5-fold splits of positions in `train`: per-stock KFold, or GroupKFold on groups[train]."""
+    if groups is None:
+        return list(KFold(5, shuffle=True, random_state=INNER_SEED).split(train))
+    return _group_kfold(len(train), np.asarray(groups)[train], INNER_SEED)
+
+
+def pair_fold(X: pd.DataFrame, y: np.ndarray, train: np.ndarray, test: np.ndarray,
+              groups: np.ndarray | None = None) -> dict[str, np.ndarray]:
     """ridge (alpha by inner CV), lgbm (grid by inner CV) and their blend for `test` stocks. Reads y[train] only.
     ridge / lgbm are exactly ``static_cv.mcap_fold``'s models (same inner folds, same tie rules)."""
     train, test = np.asarray(train), np.asarray(test)
     y_tr = y[train]
     cols = list(X.columns)
-    inner = list(KFold(5, shuffle=True, random_state=INNER_SEED).split(train))
+    inner = _inner_folds(train, groups)
     ridge_s = {a: [] for a in RIDGE_ALPHAS}
     lgbm_s = {i: [] for i in range(len(LGBM_GRID))}
     ridge_p = {a: np.zeros(len(train)) for a in RIDGE_ALPHAS}
@@ -148,11 +163,11 @@ def _md_predict(rows: MDRows, y, fit_stocks, eval_stocks, cols, K, step) -> dict
     return out
 
 
-def md_fold(rows: MDRows, y: np.ndarray, train: np.ndarray, test: np.ndarray, cols: list[str]):
+def md_fold(rows: MDRows, y: np.ndarray, train: np.ndarray, test: np.ndarray, cols: list[str], groups=None):
     """Multi-date ridge for `test` stocks; returns (predictions, (K, step, alpha)). Reads y[train] only."""
     train, test = np.asarray(train), np.asarray(test)
     score = {(k, s, a): [] for k, s in MD_GRID for a in RIDGE_ALPHAS}
-    for itr, iva in KFold(5, shuffle=True, random_state=INNER_SEED).split(train):
+    for itr, iva in _inner_folds(train, groups):
         a, b = train[itr], train[iva]
         for k, s in MD_GRID:
             for al, pr in _md_predict(rows, y, a, b, cols, k, s).items():
@@ -163,13 +178,15 @@ def md_fold(rows: MDRows, y: np.ndarray, train: np.ndarray, test: np.ndarray, co
 
 
 # --------------------------------------------------------------------------- one outer repeat
-def run_repeat(Xb, Xe, rows, y, repeat, selections=None) -> dict[str, np.ndarray]:
-    """Pooled out-of-fold predictions of ARMS_STATIC for one repeat (every stock exactly once)."""
+def run_repeat(Xb, Xe, rows, y, repeat, selections=None, groups=None) -> dict[str, np.ndarray]:
+    """Pooled out-of-fold predictions of ARMS_STATIC for one repeat (every stock exactly once). groups (issuer
+    ids) makes the outer and inner folds issuer-grouped; None is the per-stock KFold of ``outer_folds``."""
     oof = {m: np.full(len(y), np.nan) for m in ARMS_STATIC}
-    for f, (tr, te) in enumerate(outer_folds(len(y), repeat)):
-        pb, pe = pair_fold(Xb, y, tr, te), pair_fold(Xe, y, tr, te)
-        mb, sb = md_fold(rows, y, tr, te, FE_BASE_FEATURES)
-        me, se = md_fold(rows, y, tr, te, FE_EXT)
+    folds = outer_folds(len(y), repeat) if groups is None else _group_kfold(len(y), np.asarray(groups), repeat)
+    for f, (tr, te) in enumerate(folds):
+        pb, pe = pair_fold(Xb, y, tr, te, groups), pair_fold(Xe, y, tr, te, groups)
+        mb, sb = md_fold(rows, y, tr, te, FE_BASE_FEATURES, groups)
+        me, se = md_fold(rows, y, tr, te, FE_EXT, groups)
         for name, v in (("ridge", pb["ridge"]), ("lgbm", pb["lgbm"]), ("avg_ridge_lgbm", pb["avg"]),
                         ("ridge_ext", pe["ridge"]), ("lgbm_ext", pe["lgbm"]), ("ridge_md", mb),
                         ("ridge_md_ext", me)):
@@ -252,21 +269,25 @@ def reproduction_check(res: pd.DataFrame, ref_csv) -> bool | None:
     return ok
 
 
-def run(repeats: int = 10, out_dir="results", panel=None, ref_csv=None, n_boot: int = N_BOOT):
-    """Returns (summary frame, reproduction ok flag)."""
+def run(repeats: int = 10, out_dir="results", panel=None, ref_csv=None, n_boot: int = N_BOOT,
+        grouped: bool = False, universe_csv=None):
+    """Returns (summary frame, reproduction ok flag). grouped=True: issuer-grouped folds, `_grouped` file
+    stem, no TabPFN merge, reproduction check against static_cv_grouped.csv."""
     t0 = time.time()
+    stem = "static_v9_mcap_grouped" if grouped else "static_v9_mcap"
     p = panel or build_panel()
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     tickers, y, Xb, Xe, date = mcap_inputs_v9(p)
     rows = build_md_rows(p, tickers)
+    mg = issuer_ids(tickers, universe_csv) if grouped else None
     print(f"log_mcap v9: {len(tickers)} stocks at {pd.Timestamp(date).date()}, {len(rows.g)} multi-date rows", flush=True)
     reps, sels = [], []
     for r in range(repeats):
-        reps.append(run_repeat(Xb, Xe, rows, y, r, sels))
+        reps.append(run_repeat(Xb, Xe, rows, y, r, sels, mg))
         print(f"  repeat {r} done ({time.time() - t0:.0f}s)", flush=True)
     arms = list(ARMS_STATIC)
-    if merge_tabpfn(reps, tickers, out / TABPFN_FILE):
+    if not grouped and merge_tabpfn(reps, tickers, out / TABPFN_FILE):
         arms += ARMS_TABPFN
     table = summarize("log_mcap", arms, reg_metrics,
                       lambda t, ps: bootstrap_ci_mean(t, ps, fast_reg_metrics, n_boot=n_boot),
@@ -276,14 +297,14 @@ def run(repeats: int = 10, out_dir="results", panel=None, ref_csv=None, n_boot: 
     for a in arms[1:]:
         rows_out += by_arm[a] + delta_rows("log_mcap", a, REF, y, reps, len(tickers), n_boot)
     res = pd.DataFrame(rows_out)
-    res.to_csv(out / "static_v9_mcap.csv", index=False)
+    res.to_csv(out / f"{stem}.csv", index=False)
     pd.concat(_oof_rows("log_mcap", arms, tickers, y, reps, True), ignore_index=True).to_parquet(
-        out / "static_v9_mcap_oof.parquet", index=False)
+        out / f"{stem}_oof.parquet", index=False)
     sel = pd.DataFrame(sels)
-    sel.to_csv(out / "static_v9_mcap_md_selection.csv", index=False)
+    sel.to_csv(out / f"{stem}_md_selection.csv", index=False)
     print("multi-date selections (feature_set, K, step, count over outer folds):")
     print(sel.groupby(["feature_set", "K", "step"]).size().rename("count").reset_index().to_string(index=False))
-    ok = reproduction_check(res, ref_csv or "results/static_cv.csv")
+    ok = reproduction_check(res, ref_csv or ("results/static_cv_grouped.csv" if grouped else "results/static_cv.csv"))
     print(f"done in {time.time() - t0:.0f}s")
     return res, ok
 
@@ -292,8 +313,9 @@ def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--repeats", type=int, default=10)
     ap.add_argument("--out-dir", default="results")
+    ap.add_argument("--grouped", action="store_true", help="issuer-grouped folds -> static_v9_mcap_grouped*.{csv,parquet}")
     a = ap.parse_args(argv)
-    res, ok = run(a.repeats, a.out_dir)
+    res, ok = run(a.repeats, a.out_dir, grouped=a.grouped)
     show = res[res["metric"].str.contains("r2|mae")]
     with pd.option_context("display.width", 200, "display.float_format", "{:.4f}".format):
         print(show.drop(columns=["n_repeats", "n_classes"]).to_string(index=False))
