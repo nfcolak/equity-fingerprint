@@ -18,7 +18,7 @@ Protocol (selection on validation only, test scored once; same as ``forward_v7``
    on the validation rows where both exist (models ``ols_beta_kalman`` / ``ols_beta_252``, features ``single``).
 
 Output ``results/forward_kalman.csv``: target, model, features, split, metric, value, n_obs, ci_lo, ci_hi,
-selected. ``kalman_q`` rows (split train, metric ``q``/``loglik_q=<q>``) document the chosen q and the grid.
+selected. ``kalman_q`` rows (split train, metric ``q_chosen``/``loglik_q=<q>``) document the chosen q and the grid.
 
 Run: env -u PYTHONPATH PYTHONPATH=src python -m equity_fingerprint.forward_kalman
 """

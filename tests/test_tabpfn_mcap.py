@@ -160,7 +160,7 @@ class TabPFNOofTests(unittest.TestCase):
         n = len(self.tickers)
         self.assertEqual(len(df), 2 * 2 * n)
         self.assertEqual(len(StubReg.fits), 2 * 5 * 2)
-        for (fs, r), g in df.groupby(["feature_set", "repeat"]):
+        for _, g in df.groupby(["feature_set", "repeat"]):
             self.assertEqual(sorted(g["ticker"]), sorted(self.tickers))
             self.assertTrue(np.isfinite(g["y_pred"]).all())
         shapes = {s for _, s, _ in StubReg.fits}
@@ -186,7 +186,7 @@ class TabPFNOofTests(unittest.TestCase):
         from sklearn.model_selection import KFold
         for r in (0, 3):
             ref = list(KFold(5, shuffle=True, random_state=r).split(np.zeros(41)))
-            for (a, b), (c, d) in zip(ref, T.outer_folds(41, r)):
+            for (_a, b), (_c, d) in zip(ref, T.outer_folds(41, r)):
                 np.testing.assert_array_equal(b, d)
 
     def test_import_loads_neither_lightgbm_nor_torch(self):

@@ -103,11 +103,11 @@ class SectorGroupedTests(unittest.TestCase):
                 for m, v in oof.items():
                     self.assertTrue((v >= 0).all(), m)            # every stock predicted exactly once
         self.assertEqual(len(outer.calls), 15)
-        for a, k, _ in outer.calls:
+        for a, _k, _ in outer.calls:
             tr, te = np.asarray(a[3]), np.asarray(a[4])
             self.assertFalse(set(self.g[tr]) & set(self.g[te]))
         self.assertTrue(inner.calls)
-        for a, k, splits in inner.calls:
+        for _a, k, splits in inner.calls:
             self.assertIsNotNone(k.get("groups"))
             gtr = np.asarray(k["groups"])
             assert_pairs_together(self, splits, gtr)
@@ -158,7 +158,7 @@ class McapGroupedTests(unittest.TestCase):
         for m, v in oof.items():
             self.assertTrue(np.isfinite(v).all(), m)
         self.assertEqual(len(rec.calls), 1 + 5)                       # outer + one inner per outer fold
-        for (n, groups, seed), _, splits in [(a, k, o) for a, k, o in rec.calls]:
+        for (_n, groups, _seed), _, splits in [(a, k, o) for a, k, o in rec.calls]:
             assert_pairs_together(self, splits, np.asarray(groups))
 
     def test_test_label_garbage_leaves_grouped_predictions_unchanged(self):
@@ -217,7 +217,7 @@ class V9GroupedTests(unittest.TestCase):
         for m, v in oof.items():
             self.assertTrue(np.isfinite(v).all(), m)
         self.assertTrue(len(rec.calls) > 5)
-        for (n, groups, seed), _, splits in [(a, k, o) for a, k, o in rec.calls]:
+        for (_n, groups, _seed), _, splits in [(a, k, o) for a, k, o in rec.calls]:
             assert_pairs_together(self, splits, np.asarray(groups))
 
     def test_test_label_garbage_leaves_grouped_predictions_unchanged(self):

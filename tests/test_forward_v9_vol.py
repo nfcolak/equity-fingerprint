@@ -14,9 +14,10 @@ from equity_fingerprint import forward_minirocket as M
 from equity_fingerprint import forward_v9_vol as V
 
 TICKERS = list("ABCDEFGH")
+N_TICKERS = len(TICKERS)
 
 
-def synth_panel(seed=0, k=len(TICKERS)):
+def synth_panel(seed=0, k=N_TICKERS):
     """Small synthetic Panel (2013-03 .. 2025-03, k stocks) with slowly varying volatility."""
     rng = np.random.default_rng(seed)
     cal = pd.bdate_range("2013-03-01", "2025-03-31")

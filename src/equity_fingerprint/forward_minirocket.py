@@ -30,7 +30,7 @@ Protocol (selection on validation only, test scored once, per target):
 
 Output ``results/forward_minirocket.csv``: target, model, features, split, metric, value, n_obs, ci_lo, ci_hi,
 selected. ``ci_lo/ci_hi`` are filled on the test rows with metric ``delta_r2_vs_linear_fe``. Extra val rows
-hold hyper-parameters (``alpha``, ``fe_scale``, ``weight_mrfe``, ``n_mr_features``).
+hold hyper-parameters (``alpha``, ``fe_scale``, ``weight_mrfe``, ``best_iteration``, ``n_mr_features``).
 
 Run: env -u PYTHONPATH PYTHONPATH=src python -m equity_fingerprint.forward_minirocket
 """

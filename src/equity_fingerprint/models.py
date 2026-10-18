@@ -23,8 +23,6 @@ RIDGE_ALPHAS = [0.01, 0.1, 1, 10, 100, 1000]
 LOGIT_CS = [0.01, 0.1, 1, 10]
 LGBM_GRID = [dict(num_leaves=nl, min_child_samples=mcs)
              for nl, mcs in itertools.product([8, 31], [20, 100, 400])]
-MODELS = ["baseline", "linear_raw", "linear_fe", "lgbm_raw", "lgbm_fe"]
-MODELS_V2 = MODELS + ["linear_fe2", "lgbm_fe2"]
 
 
 # --------------------------------------------------------------------------- preprocessing

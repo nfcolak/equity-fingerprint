@@ -148,7 +148,7 @@ class FoldTests(unittest.TestCase):
         # without groups the same pair would be split in at least one repeat
         split_somewhere = False
         for r in range(8):
-            for tr, te in ms.swiss_folds(t["y"][:n_ch], np.arange(n_ch), r):
+            for _tr, te in ms.swiss_folds(t["y"][:n_ch], np.arange(n_ch), r):
                 split_somewhere |= any((2 * i in te) != (2 * i + 1 in te) for i in range(5))
         self.assertTrue(split_somewhere)
 

@@ -13,7 +13,7 @@ def fake_frames(seed=0, T=300):
     rng = np.random.default_rng(seed)
     dates = pd.bdate_range("2015-01-01", periods=T)
     rows = []
-    for t, cur in (("AAA.SW", "CHF"), ("BBB.SW", "CHF"), ("CCC.DE", "EUR")):
+    for t in ("AAA.SW", "BBB.SW", "CCC.DE"):
         px = 50 * np.exp(np.cumsum(rng.normal(0, 0.01, T)))
         for i, d in enumerate(dates):
             if t == "BBB.SW" and i in (20, 21):

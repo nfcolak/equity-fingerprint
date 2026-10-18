@@ -6,7 +6,6 @@ Every step is cached on disk and skipped when its file exists unless --refresh.
 from __future__ import annotations
 
 import argparse
-import io
 import json
 import os
 import urllib.request

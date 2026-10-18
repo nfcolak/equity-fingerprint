@@ -232,8 +232,6 @@ def main() -> None:
     sec_map, dropped = T.sector_map(panel, tickers)
     for d in dropped:
         print(f"[sector] dropped class {d['sector']!r} ({d['n_tickers']} tickers < {T.MIN_CLASS_TICKERS})")
-    tsplit = T.ticker_split(tickers, sec_all.to_dict(), T.SEED)
-    train_tickers = [t for t in tickers if tsplit[t] == "train"]
 
     # ---- return-structure (PCA) features: time targets use all tickers, grouped targets train tickers only
     keys = ["pos", "ticker"]

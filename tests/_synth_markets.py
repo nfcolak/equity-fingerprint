@@ -207,7 +207,7 @@ def make_synth(root, seed=0, T=1700, start="2018-01-02", n_ch=24, specials=True,
     pd.DataFrame(f_info).to_parquet(pre_dir / "raw" / "info.parquet", index=False)
     pd.DataFrame(f_uni).to_csv(pre_dir / "universe.csv", index=False)
     idx_rows = []
-    for mk, (code, suffix, index, ccy, dom) in MARKETS.items():
+    for mk, (_code, _suffix, index, _ccy, _dom) in MARKETS.items():
         idx_rows.append(_bars(dates, index, path(mret[mk], 1000.0), np.zeros(T), rng))
     pd.concat(idx_rows, ignore_index=True).to_parquet(pre_dir / "raw" / "index.parquet", index=False)
     for t, j in f_json.items():

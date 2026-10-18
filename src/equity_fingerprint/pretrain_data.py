@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from .data import FIELD_MAP, INFO_FIELDS, PRICE_COLS, _download
+from .data import INFO_FIELDS, PRICE_COLS, _download
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")

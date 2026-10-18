@@ -14,7 +14,8 @@ Steps (design.md, group 1):
     days (default 1: Yahoo FX closes after the SIX / US close); GBp = GBP / 100; ``.L`` lines whose
     close x shares is ~100x the market cap are treated as pence whatever the currency field says (logged).
   * ``select_foreign``: equity, sector known, not ``.SW``, not a Swiss name, domiciled in the listing
-    country, >= 504 valid returns, median CHF close >= 5, median CHF traded value above the region floor.
+    country, >= 504 valid returns, median CHF close and median CHF traded value above the region floors
+    (``MIN_CLOSE_CHF``: CHF 5 for US, none for EU; ``MIN_TV_CHF``).
   * ``dedupe``: normalised-name pass and weekly CHF return correlation (>= 0.90 over >= 104 weeks) against
     Swiss and other foreign lines; Swiss/foreign -> drop foreign, US/EU -> drop US, else keep the line with
     the higher traded value.

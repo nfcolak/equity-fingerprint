@@ -9,7 +9,7 @@ Model per stock (daily returns ``r``, market return ``m`` = ``panel.mkt``)::
 * ``scale`` is the standard deviation of the market return over dates <= ``train_end`` (so ``q`` is
   dimension-free: a drift of ~0.2 beta/year corresponds to q of order 1e-4).
 * The state covariance is kept in units of ``s2``. ``s2`` is estimated causally per stock as the running mean of
-  the normalised squared one-step innovations ``v^2 / S``, started from the OLS residual variance (252 pseudo-obs).
+  the normalised squared one-step innovations ``v^2 / S``, started from the OLS residual variance (``ss / n`` with n = 250 = 252 - 2 degrees of freedom).
 * Initialisation: per stock, at the date of its 252nd valid (r and m observed) day, from the OLS fit over those 252
   days (alpha, beta, ``(X'X)^-1`` as covariance). Output is NaN before that date.
 * Missing days (r or m NaN): prediction step only (state carried, covariance grows).

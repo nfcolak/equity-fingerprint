@@ -254,7 +254,6 @@ def pc_factors(p: Panel, fit_tickers: list[str], train_end=TRAIN_END, k: int = P
 
 def pc_loadings(p: Panel, F: pd.DataFrame, pos: np.ndarray) -> pd.DataFrame:
     """Rolling PC_WINDOW-day correlation of each ticker's returns with each PC factor (observation rows)."""
-    cal = p.calendar
     nt = len(p.tickers)
     data = {}
     for name in PC_FEATURES:

@@ -1,4 +1,5 @@
-"""Rebuild the README results block from results/metrics.csv (and run_info.json).
+"""Rebuild the README results block from the files in results/ (metrics.csv, robustness.csv, run_info.json, the
+v6 headline files, the forward_*, static_v9_*, sector_eu, multi_static and history_ext files).
 
 Run: env -u PYTHONPATH PYTHONPATH=src python -m equity_fingerprint.report
 """
@@ -67,12 +68,10 @@ def build_v2(results: Path) -> list[str]:
           f"{len(seeds)} seeds. Test tickers per seed: `log_mcap` {ns['log_mcap']}, `sector` {ns['sector']}. "
           "Source: `results/robustness.csv`.", "",
           "| Model | `log_mcap` R² | `sector` macro-F1 |", "|---|---:|---:|"]
-    stats = {}
     for mod in MODELS_V2:
         cells = []
         for t, met in ROB_TARGETS:
             v = rt[(rt.target == t) & (rt.model == mod) & (rt.metric == met)]["value"]
-            stats[(t, mod)] = (v.mean(), v.std(ddof=1), len(v))
             cells.append(f"{v.mean():.3f} ± {v.std(ddof=1):.3f}" if len(v) > 1 else "n/a")
         L.append(f"| {mod} | " + " | ".join(cells) + " |")
 
@@ -267,8 +266,8 @@ def _v4_summary(m: pd.DataFrame, rb, fp: dict) -> list[str]:
                      + ("v4 better" if d > 0 else "v4 not better") + ")")
     L = []
     if parts:
-        L.append(f"On the test split, with the best model of each family chosen by validation "
-                 f"(main metric: R² for regression, macro-F1 for `sector`), the best v4 model against the best v1-v3 model is: "
+        L.append("On the test split, with the best model of each family chosen by validation "
+                 "(main metric: R² for regression, macro-F1 for `sector`), the best v4 model against the best v1-v3 model is: "
                  + "; ".join(parts) + f". The best v4 model is better on {wins} of {n_cmp} targets"
                  + (", so v4 does not beat the v1-v3 benchmark on every target." if wins < n_cmp else "."))
     if rb is not None:
@@ -397,8 +396,8 @@ def build_v5(results: Path) -> list[str]:
                              f"(higher in {int((d > 0).sum())} of {len(d)} seeds, seed-to-seed sd of the difference "
                              f"{d.std(ddof=1):.3f})")
     if n_cmp:
-        L.append(f"On the test split, with the best model of each family chosen by validation (main metric: R² for "
-                 f"regression, macro-F1 for `sector`), the best v5 model against the best v1-v4 model is: "
+        L.append("On the test split, with the best model of each family chosen by validation (main metric: R² for "
+                 "regression, macro-F1 for `sector`), the best v5 model against the best v1-v4 model is: "
                  + "; ".join(parts) + f". The best v5 model is better on {wins} of {n_cmp} targets"
                  + (", so v5 does not beat the v1-v4 benchmark on every target." if wins < n_cmp else "."))
     if rob_parts:
